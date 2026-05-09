@@ -1,0 +1,2 @@
+"""Analytically marginalized map likelihoods."""
+

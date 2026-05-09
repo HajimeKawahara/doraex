@@ -1,0 +1,2 @@
+"""Rotating-body viewing geometry."""
+

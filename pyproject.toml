@@ -1,4 +1,4 @@
-# pyproject.toml for ExoJAX
+# pyproject.toml for Doraex
 # - Uses PEP 621 metadata (project table)
 # - Builds with setuptools + setuptools-scm (version from VCS tags)
 # - Packages are under src/ (package_dir={"": "src"})
@@ -9,17 +9,15 @@ requires = ["setuptools>=69", "wheel", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Doraex"
+name = "doraex"
 # Version is provided by setuptools-scm from your Git tags (e.g., v2.2.0).
 # Remove any hard-coded version numbers in setup.py. Keep dynamic below.
 dynamic = ["version"]
 
-# Optional but recommended: fill in author info if you want it embedded here.
-# If you prefer to keep metadata in src/draex/__init__.py, you can leave these out.
 authors = [{ name = "Hajime Kawahara and Doraex developers", email = "divrot@gmail.com" }]
 maintainers = [{ name = "Hajime Kawahara", email = "divrot@gmail.com" }]
 
-description = "Doppler Retrieval of Atmosphere using ExoJAX."
+description = "Bayesian Doppler retrieval of atmospheres using ExoJAX."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.9"
 
@@ -33,14 +31,27 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 
-# Runtime dependencies migrated from requirements.txt.
-# NOTE:
-# - Keep "numpy<2" because your requirements pin it.
-# - jax/jaxlib wheels are platform-specific; declaring both is common.
 dependencies = [
   "jax",
   "jaxlib",
-  "exojax"
+  "numpy",
+  "numpyro",
+  "scipy",
+  "exojax",
+]
+
+[project.optional-dependencies]
+maps = [
+  "healpy",
+  "healjax @ git+https://github.com/ghcollin/healjax.git",
+]
+examples = [
+  "pandas",
+  "matplotlib",
+  "tqdm",
+]
+dev = [
+  "pytest",
 ]
 
 [project.urls]
@@ -61,9 +72,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools_scm]
-# Configure setuptools-scm to write the resolved version string into your package.
-# This keeps the prior behavior: write __version__ into exojax/ExoJAX_version.py.
-write_to = "src/exojax/Doraex_version.py"
+write_to = "src/doraex/Doraex_version.py"
 # Optional templates and schemes can be customized if you need exact formatting:
 # write_to_template = "__version__ = \"{version}\"\n"
 # version_scheme = "guess-next-dev"

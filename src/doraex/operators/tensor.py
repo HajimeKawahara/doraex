@@ -1,0 +1,2 @@
+"""Tensor-structured operator utilities."""
+
