@@ -1,0 +1,270 @@
+"""Create Milestone 2-1 fixed two-column diagnostic products."""
+
+import argparse
+import os
+from pathlib import Path
+import sys
+
+import jax
+import numpy as np
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from doraex.workflows.luhman16b_milestone2 import (  # noqa: E402
+    compute_contrast_map_moments,
+    load_milestone2_fixed_inputs,
+    reconstruct_fixed_two_column_timeseries,
+)
+
+
+def parse_args():
+    """Parse command-line arguments."""
+
+    parser = argparse.ArgumentParser(
+        description="Build Milestone 2-1 maps and spectral residual diagnostics."
+    )
+    parser.add_argument("--data-dir", default=str(ROOT / "data"))
+    parser.add_argument(
+        "--samples",
+        default=str(
+            ROOT
+            / "results"
+            / "milestone2_1"
+            / "mcmc_chip1_sampled_fixed_columns.npz"
+        ),
+    )
+    parser.add_argument(
+        "--profiles",
+        default=str(ROOT / "data" / "milestone2_fixed_profiles_chip1.npz"),
+    )
+    parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_1"))
+    parser.add_argument("--chip-index", type=int, default=1)
+    parser.add_argument("--nside", type=int, default=8)
+    parser.add_argument(
+        "--max-map-samples",
+        type=int,
+        default=None,
+        help="Use at most this many posterior samples for map moments.",
+    )
+    parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--smoke-wavelength-step", type=int, default=64)
+    parser.add_argument("--smoke-phase-count", type=int, default=4)
+    parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
+    return parser.parse_args()
+
+
+def _select_sample_indices(sample_count, max_map_samples):
+    if max_map_samples is None or max_map_samples >= sample_count:
+        return None
+    return np.linspace(0, sample_count - 1, max_map_samples, dtype=int)
+
+
+def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, bottom_unit, out_path):
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    import healpy as hp
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(9, 6))
+    hp.mollview(
+        top_map,
+        fig=fig.number,
+        sub=(2, 1, 1),
+        cmap="coolwarm",
+        title=top_title,
+        unit=top_unit,
+        flip="geo",
+    )
+    hp.graticule()
+    hp.mollview(
+        bottom_map,
+        fig=fig.number,
+        sub=(2, 1, 2),
+        cmap="viridis",
+        title=bottom_title,
+        unit=bottom_unit,
+        flip="geo",
+    )
+    hp.graticule()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_cloud_fraction(mean_map, std_map, out_path):
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    import healpy as hp
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(9, 6))
+    hp.mollview(
+        mean_map,
+        fig=fig.number,
+        sub=(2, 1, 1),
+        cmap="viridis",
+        min=0.0,
+        max=1.0,
+        title="Posterior mean cloud fraction",
+        unit="f_cloud + b",
+        flip="geo",
+    )
+    hp.graticule()
+    hp.mollview(
+        std_map,
+        fig=fig.number,
+        sub=(2, 1, 2),
+        cmap="magma",
+        title="Posterior std. dev. of cloud fraction",
+        unit="std",
+        flip="geo",
+    )
+    hp.graticule()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_delta_s(delta_s_mean, delta_s_std, out_path):
+    _plot_two_panel_map(
+        delta_s_mean,
+        delta_s_std,
+        "Mean spectral contrast contribution",
+        "Std. dev. of spectral contrast contribution",
+        "b * rms(delta spectrum)",
+        "std",
+        out_path,
+    )
+
+
+def _plot_figure9(wavelengths, observed, model, sigma_d, out_path):
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    import matplotlib.pyplot as plt
+
+    residual = observed - model
+    offsets = np.arange(observed.shape[0])[:, None] * 0.12
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(10, 7),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.0, 1.0]},
+    )
+    for phase_index in range(observed.shape[0]):
+        axes[0].plot(
+            wavelengths,
+            observed[phase_index] + offsets[phase_index, 0],
+            color="black",
+            linewidth=0.7,
+        )
+        axes[0].plot(
+            wavelengths,
+            model[phase_index] + offsets[phase_index, 0],
+            color="tab:red",
+            linewidth=0.7,
+        )
+    axes[0].set_ylabel("Flux + offset")
+    axes[0].set_title("Observed spectra and fixed two-column reconstruction")
+
+    image = axes[1].imshow(
+        residual / sigma_d,
+        aspect="auto",
+        origin="lower",
+        extent=[wavelengths[0], wavelengths[-1], 0, observed.shape[0] - 1],
+        cmap="RdBu_r",
+        vmin=-3.0,
+        vmax=3.0,
+    )
+    axes[1].set_xlabel("Wavelength [Angstrom]")
+    axes[1].set_ylabel("Phase index")
+    fig.colorbar(image, ax=axes[1], label="Residual / sigma_d")
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def main():
+    """Compute and save Milestone 2-1 diagnostic products."""
+
+    args = parse_args()
+    jax.config.update("jax_enable_x64", args.x64)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    profiles_path = None if args.smoke_test else args.profiles
+    chip_data, geometry, clear_profile, cloudy_profile = load_milestone2_fixed_inputs(
+        args.data_dir,
+        profiles_path=profiles_path,
+        chip_index=args.chip_index,
+        nside=args.nside,
+        smoke_test=args.smoke_test,
+        smoke_wavelength_step=args.smoke_wavelength_step,
+        smoke_phase_count=args.smoke_phase_count,
+    )
+    samples = dict(np.load(args.samples, allow_pickle=False))
+    sample_indices = _select_sample_indices(len(samples["v"]), args.max_map_samples)
+
+    contrast_mean, contrast_var, cloud_mean, cloud_var = compute_contrast_map_moments(
+        chip_data,
+        geometry,
+        clear_profile,
+        cloudy_profile,
+        samples,
+        sample_indices=sample_indices,
+    )
+    contrast_mean = np.asarray(contrast_mean)
+    contrast_var = np.asarray(contrast_var)
+    cloud_mean = np.asarray(cloud_mean)
+    cloud_var = np.asarray(cloud_var)
+
+    model, median_sample = reconstruct_fixed_two_column_timeseries(
+        chip_data,
+        geometry,
+        clear_profile,
+        cloudy_profile,
+        samples,
+        contrast_mean,
+    )
+    model = np.asarray(model)
+    residual = chip_data.flux - model
+    sigma_d = float(np.asarray(median_sample["sigma_d"]))
+
+    delta_profile = np.asarray(cloudy_profile) - np.asarray(clear_profile)
+    delta_scale = float(np.sqrt(np.mean(delta_profile**2)))
+    delta_s_mean = contrast_mean * delta_scale
+    delta_s_var = contrast_var * delta_scale**2
+
+    np.save(out_dir / f"contrast_mean_chip{args.chip_index}.npy", contrast_mean)
+    np.save(out_dir / f"contrast_var_chip{args.chip_index}.npy", contrast_var)
+    np.save(out_dir / f"cloud_fraction_mean_chip{args.chip_index}.npy", cloud_mean)
+    np.save(out_dir / f"cloud_fraction_var_chip{args.chip_index}.npy", cloud_var)
+    np.save(out_dir / f"delta_s_mean_chip{args.chip_index}.npy", delta_s_mean)
+    np.save(out_dir / f"delta_s_var_chip{args.chip_index}.npy", delta_s_var)
+    np.save(out_dir / f"model_spectrum_chip{args.chip_index}.npy", model)
+    np.save(out_dir / f"residual_chip{args.chip_index}.npy", residual)
+    np.savez(
+        out_dir / f"posterior_median_parameters_chip{args.chip_index}.npz",
+        **{key: np.asarray(value) for key, value in median_sample.items()},
+    )
+
+    _plot_cloud_fraction(
+        cloud_mean,
+        np.sqrt(cloud_var),
+        out_dir / f"figure8_cloud_fraction_chip{args.chip_index}.png",
+    )
+    _plot_delta_s(
+        delta_s_mean,
+        np.sqrt(delta_s_var),
+        out_dir / f"figure8_delta_s_chip{args.chip_index}.png",
+    )
+    _plot_figure9(
+        chip_data.wavelengths,
+        chip_data.flux,
+        model,
+        sigma_d,
+        out_dir / f"figure9_fixed_two_column_chip{args.chip_index}.png",
+    )
+    print(f"Products saved to {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

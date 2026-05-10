@@ -11,7 +11,10 @@ from doraex.workflows.luhman16b_milestone1 import (
     save_mcmc_samples,
 )
 from doraex.workflows.luhman16b_milestone2 import (
+    compute_contrast_map_moments,
+    fixed_two_column_median_sample,
     load_milestone2_fixed_inputs,
+    reconstruct_fixed_two_column_timeseries,
     run_fixed_two_column_mcmc,
     save_fixed_two_column_samples,
     save_synthetic_smoke_profiles,
@@ -27,6 +30,9 @@ __all__ = [
     "run_luhman16b_mcmc",
     "save_mcmc_samples",
     "load_milestone2_fixed_inputs",
+    "compute_contrast_map_moments",
+    "fixed_two_column_median_sample",
+    "reconstruct_fixed_two_column_timeseries",
     "run_fixed_two_column_mcmc",
     "save_fixed_two_column_samples",
     "save_synthetic_smoke_profiles",

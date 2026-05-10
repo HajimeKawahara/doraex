@@ -8,7 +8,11 @@ import numpy as np
 from numpyro.infer import MCMC, NUTS, init_to_value
 
 from doraex.data.luhman16b import load_luhman16b_chip, subset_chip_data
+from doraex.geometry.limb_darkening import kipping_q_to_u
+from doraex.inference.map_posterior import conditional_map_posterior
 from doraex.inference.numpyro_models import fixed_two_column_doppler_model
+from doraex.operators.design_matrix import two_column_operator_from_times
+from doraex.priors.spherical_gp import add_diagonal_jitter, squared_exponential_covariance
 from doraex.spectra.exojax_forward import (
     load_two_column_profiles,
     save_two_column_profiles,
@@ -180,3 +184,187 @@ def save_synthetic_smoke_profiles(path, wavelengths):
         metadata={"profile_source": "synthetic_smoke"},
     )
     return clear_profile, cloudy_profile
+
+
+def _fixed_sample_at(samples, index):
+    sample_names = {
+        "cosi",
+        "v",
+        "q1",
+        "q2",
+        "u1",
+        "u2",
+        "log_w",
+        "f_cloud",
+        "sigma_d",
+        "sigma_b",
+        "ell_b",
+        "P",
+    }
+    return {
+        name: jnp.asarray(samples[name])[index]
+        for name in sample_names
+        if name in samples
+    }
+
+
+def two_column_operator_from_sample(
+    chip_data,
+    geometry,
+    clear_profile,
+    cloudy_profile,
+    sample,
+):
+    """Build ``(baseline, W_delta)`` for one Milestone 2-1 sample."""
+
+    inclination = jnp.arccos(jnp.asarray(sample["cosi"]))
+    u1 = jnp.asarray(sample.get("u1", kipping_q_to_u(sample["q1"], sample["q2"])[0]))
+    u2 = jnp.asarray(sample.get("u2", kipping_q_to_u(sample["q1"], sample["q2"])[1]))
+    weights = jnp.exp(jnp.asarray(sample["log_w"]))
+    return two_column_operator_from_times(
+        geometry.theta,
+        geometry.phi,
+        jnp.asarray(sample["v"]),
+        inclination,
+        u1,
+        u2,
+        jnp.asarray(chip_data.obs_times),
+        jnp.asarray(sample["P"]),
+        jnp.asarray(chip_data.wavelengths),
+        jnp.asarray(clear_profile),
+        jnp.asarray(cloudy_profile),
+        jnp.asarray(sample["f_cloud"]),
+        weights=weights,
+    )
+
+
+def conditional_contrast_map_for_sample(
+    chip_data,
+    geometry,
+    clear_profile,
+    cloudy_profile,
+    sample,
+    gp_jitter=1.0e-6,
+):
+    """Compute conditional cloud-contrast posterior for one sample."""
+
+    baseline, contrast_matrix = two_column_operator_from_sample(
+        chip_data,
+        geometry,
+        clear_profile,
+        cloudy_profile,
+        sample,
+    )
+    prior_covariance = add_diagonal_jitter(
+        squared_exponential_covariance(
+            geometry.distance_matrix,
+            jnp.asarray(sample["sigma_b"]),
+            jnp.asarray(sample["ell_b"]),
+        ),
+        jitter=gp_jitter,
+    )
+    prior_mean = jnp.zeros(contrast_matrix.shape[1])
+    noise_variance = (
+        jnp.asarray(sample["sigma_d"]) ** 2 * jnp.ones(contrast_matrix.shape[0])
+        + 1.0e-6
+    )
+    return conditional_map_posterior(
+        jnp.asarray(chip_data.flux).reshape(-1) - baseline,
+        contrast_matrix,
+        prior_mean,
+        prior_covariance,
+        noise_variance,
+    )
+
+
+def compute_contrast_map_moments(
+    chip_data,
+    geometry,
+    clear_profile,
+    cloudy_profile,
+    samples,
+    sample_indices=None,
+):
+    """Compute posterior moments for the cloud-fraction contrast map."""
+
+    sample_count = len(np.asarray(samples["v"]))
+    if sample_indices is None:
+        sample_indices = np.arange(sample_count)
+    else:
+        sample_indices = np.asarray(sample_indices)
+
+    conditional_means = []
+    conditional_diag_sum = jnp.zeros(geometry.theta.shape[0])
+    f_cloud_values = []
+    for index in sample_indices:
+        sample = _fixed_sample_at(samples, int(index))
+        mean, covariance = conditional_contrast_map_for_sample(
+            chip_data,
+            geometry,
+            clear_profile,
+            cloudy_profile,
+            sample,
+        )
+        conditional_means.append(mean)
+        conditional_diag_sum = conditional_diag_sum + jnp.diag(covariance)
+        f_cloud_values.append(jnp.asarray(sample["f_cloud"]))
+
+    mean_stack = jnp.stack(conditional_means, axis=0)
+    contrast_mean = jnp.mean(mean_stack, axis=0)
+    within = conditional_diag_sum / len(sample_indices)
+    between = jnp.mean((mean_stack - contrast_mean[None, :]) ** 2, axis=0)
+    contrast_variance = within + between
+
+    f_cloud_stack = jnp.stack(f_cloud_values, axis=0)
+    cloud_fraction_samples = f_cloud_stack[:, None] + mean_stack
+    cloud_fraction_mean = jnp.mean(cloud_fraction_samples, axis=0)
+    cloud_fraction_variance = (
+        jnp.mean((cloud_fraction_samples - cloud_fraction_mean[None, :]) ** 2, axis=0)
+        + within
+    )
+    return contrast_mean, contrast_variance, cloud_fraction_mean, cloud_fraction_variance
+
+
+def fixed_two_column_median_sample(samples):
+    """Return marginal posterior medians for Milestone 2-1 samples."""
+
+    result = {}
+    skip_names = {
+        "wavelengths",
+        "obs_times",
+        "clear_profile",
+        "cloudy_profile",
+        "chip_index",
+        "nside",
+        "period_mode",
+    }
+    for name, values in samples.items():
+        array = np.asarray(values)
+        if array.ndim == 0 or name in skip_names:
+            continue
+        result[name] = jnp.asarray(np.median(array, axis=0))
+    if "u1" not in result or "u2" not in result:
+        result["u1"], result["u2"] = kipping_q_to_u(result["q1"], result["q2"])
+    return result
+
+
+def reconstruct_fixed_two_column_timeseries(
+    chip_data,
+    geometry,
+    clear_profile,
+    cloudy_profile,
+    samples,
+    contrast_map,
+):
+    """Reconstruct spectra from median nonlinear parameters and contrast map."""
+
+    sample = fixed_two_column_median_sample(samples)
+    baseline, contrast_matrix = two_column_operator_from_sample(
+        chip_data,
+        geometry,
+        clear_profile,
+        cloudy_profile,
+        sample,
+    )
+    model = baseline + contrast_matrix @ jnp.asarray(contrast_map)
+    return model.reshape(chip_data.flux.shape), sample
