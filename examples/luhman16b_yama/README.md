@@ -59,3 +59,48 @@ The main outputs are:
 - `model_spectrum_chip1.npy`
 - `residual_chip1.npy`
 - `figure9_chip1_spectral_fit_residual.png`
+
+## Milestone 2-1
+
+Milestone 2-1 couples Milestone 1 to fixed clear/cloudy atmospheric columns. The NUTS run samples geometry, phase weights, mean cloud fraction, noise, and a marginalized cloud-contrast map; the atmospheric power-law parameters are fixed outside NUTS.
+
+Create a smoke-test profile file without ExoJAX:
+
+```bash
+python examples/luhman16b_yama/generate_milestone2_fixed_profiles.py \
+  --smoke-test \
+  --out results/milestone2_1_smoke/fixed_profiles_smoke.npz
+```
+
+Run a reduced NUTS smoke test:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_fixed_atmosphere.py \
+  --smoke-test \
+  --nside 1 \
+  --num-warmup 2 \
+  --num-samples 2 \
+  --out-dir results/milestone2_1_smoke
+```
+
+For production, first generate fixed ExoJAX profiles on the full chip grid:
+
+```bash
+python examples/luhman16b_yama/generate_milestone2_fixed_profiles.py \
+  --chip-index 1 \
+  --out data/milestone2_fixed_profiles_chip1.npz \
+  --opacity-cache-dir data/opacities/luhman16b_powerlaw \
+  --database-dir ~/data_mol/.database
+```
+
+Then run the fixed-atmosphere two-column NUTS analysis:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_fixed_atmosphere.py \
+  --nside 8 \
+  --chip-index 1 \
+  --profiles data/milestone2_fixed_profiles_chip1.npz \
+  --num-warmup 500 \
+  --num-samples 1000 \
+  --out-dir results/milestone2_1
+```

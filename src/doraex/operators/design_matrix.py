@@ -252,3 +252,64 @@ def two_column_operator_from_angles(
     )
     uniform_map = jnp.ones(base_matrix.shape[1])
     return base_matrix @ uniform_map, contrast_matrix
+
+
+def two_column_operator_from_times(
+    theta,
+    phi,
+    vrot,
+    inclination,
+    u1,
+    u2,
+    obs_times,
+    period,
+    wavelengths,
+    clear_profile,
+    cloudy_profile,
+    mean_cloud_fraction,
+    weights=None,
+    t0=0.0,
+    pixel_area=1.0,
+):
+    """Build the two-column Doppler-retrieval operator from times.
+
+    Args:
+        theta: Pixel colatitudes in the co-rotating frame, in radians.
+        phi: Pixel longitudes in the co-rotating frame, in radians.
+        vrot: Equatorial rotation velocity, in km/s.
+        inclination: Spin inclination angle in radians.
+        u1: First quadratic limb-darkening coefficient.
+        u2: Second quadratic limb-darkening coefficient.
+        obs_times: Observation times in the same units as ``period`` and
+            ``t0``.
+        period: Rotation period in the same units as ``obs_times``.
+        wavelengths: One-dimensional wavelength grid.
+        clear_profile: Rest-frame local spectrum for the clear atmospheric
+            column, sampled on ``wavelengths``.
+        cloudy_profile: Rest-frame local spectrum for the cloudy atmospheric
+            column, sampled on ``wavelengths``.
+        mean_cloud_fraction: Uniform baseline cloudy-column fraction.
+        weights: Optional per-exposure multiplicative weights.
+        t0: Reference epoch used to convert times to phases.
+        pixel_area: Optional equal-area pixel solid-angle factor.
+
+    Returns:
+        A tuple ``(m0, W_delta)`` for the flattened baseline spectrum and the
+        cloud-contrast design matrix.
+    """
+    phases = (jnp.asarray(obs_times) - t0) / period
+    return two_column_operator_from_angles(
+        theta,
+        phi,
+        vrot,
+        inclination,
+        u1,
+        u2,
+        phases,
+        wavelengths,
+        clear_profile,
+        cloudy_profile,
+        mean_cloud_fraction,
+        weights=weights,
+        pixel_area=pixel_area,
+    )
