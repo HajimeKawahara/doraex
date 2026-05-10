@@ -26,7 +26,31 @@ def exposure_matrix_from_angles(
     line_profile,
     pixel_area=1.0,
 ):
-    """Build the design matrix for one exposure from explicit pixel angles."""
+    """Build the one-exposure Doppler-imaging design matrix.
+
+    This implements the discretized forward model in Ureshino et al.
+    Eq. (10)-(11) for fixed nonlinear geometry and a fixed rest-frame line
+    profile. The returned matrix maps a pixel-brightness vector ``a`` to one
+    phase-resolved spectrum ``d_k``.
+
+    Args:
+        theta: Pixel colatitudes in the co-rotating frame, in radians.
+        phi: Pixel longitudes in the co-rotating frame, in radians.
+        vrot: Equatorial rotation velocity, in km/s.
+        inclination: Spin inclination angle in radians.
+        u1: First quadratic limb-darkening coefficient.
+        u2: Second quadratic limb-darkening coefficient.
+        phase: Rotational phase in cycles.
+        wavelengths: One-dimensional wavelength grid.
+        line_profile: Rest-frame local line profile sampled on ``wavelengths``.
+        pixel_area: Optional equal-area pixel solid-angle factor. The default
+            preserves the original BayesianDI convention used by the tests.
+
+    Returns:
+        A matrix with shape ``(n_wavelength, n_pixel)``. Each column is the
+        Doppler-shifted local profile for one pixel multiplied by visibility,
+        projected area, limb darkening, and ``pixel_area``.
+    """
     phi_rot = rotate_longitude(phi, phase)
     theta_obs, phi_obs = incline(theta, phi_rot, jnp.pi / 2.0 - inclination)
 
@@ -53,7 +77,27 @@ def full_design_matrix_from_angles(
     weights=None,
     pixel_area=1.0,
 ):
-    """Build the stacked design matrix for all phases."""
+    """Build the phase-stacked Doppler-imaging design matrix.
+
+    Args:
+        theta: Pixel colatitudes in the co-rotating frame, in radians.
+        phi: Pixel longitudes in the co-rotating frame, in radians.
+        vrot: Equatorial rotation velocity, in km/s.
+        inclination: Spin inclination angle in radians.
+        u1: First quadratic limb-darkening coefficient.
+        u2: Second quadratic limb-darkening coefficient.
+        phases: Rotational phases in cycles.
+        wavelengths: One-dimensional wavelength grid.
+        line_profile: Rest-frame local line profile sampled on ``wavelengths``.
+        weights: Optional per-phase multiplicative weights for exposure time,
+            normalization, or signal-to-noise weighting. If omitted, all phases
+            use unit weight.
+        pixel_area: Optional equal-area pixel solid-angle factor.
+
+    Returns:
+        The block-stacked matrix ``W`` from Ureshino et al. Eq. (13)-(14), with
+        shape ``(n_phase * n_wavelength, n_pixel)``.
+    """
     phases = jnp.asarray(phases)
     if weights is None:
         weights = jnp.ones_like(phases)
@@ -92,7 +136,28 @@ def full_design_matrix_from_times(
     t0=0.0,
     pixel_area=1.0,
 ):
-    """Build the stacked design matrix from observation times and period."""
+    """Build the phase-stacked design matrix from observation times.
+
+    Args:
+        theta: Pixel colatitudes in the co-rotating frame, in radians.
+        phi: Pixel longitudes in the co-rotating frame, in radians.
+        vrot: Equatorial rotation velocity, in km/s.
+        inclination: Spin inclination angle in radians.
+        u1: First quadratic limb-darkening coefficient.
+        u2: Second quadratic limb-darkening coefficient.
+        obs_times: Observation times in the same units as ``period`` and
+            ``t0``.
+        period: Rotation period in the same units as ``obs_times``.
+        wavelengths: One-dimensional wavelength grid.
+        line_profile: Rest-frame local line profile sampled on ``wavelengths``.
+        weights: Optional per-exposure multiplicative weights.
+        t0: Reference epoch used to convert times to phases.
+        pixel_area: Optional equal-area pixel solid-angle factor.
+
+    Returns:
+        The block-stacked matrix ``W`` with shape
+        ``(n_time * n_wavelength, n_pixel)``.
+    """
     phases = (jnp.asarray(obs_times) - t0) / period
     return full_design_matrix_from_angles(
         theta,
@@ -124,7 +189,36 @@ def two_column_operator_from_angles(
     weights=None,
     pixel_area=1.0,
 ):
-    """Return the uniform component and contrast-map matrix for two columns."""
+    """Build the two-column Doppler-retrieval linear operator.
+
+    The local spectrum is parameterized as
+    ``s_j = (1 - f0 - b_j) * clear_profile + (f0 + b_j) * cloudy_profile``.
+    For fixed atmospheric columns this can be written as
+    ``d = m0 + W_delta b``, preserving the Ureshino-style linear inverse
+    problem for the surface contrast map ``b``.
+
+    Args:
+        theta: Pixel colatitudes in the co-rotating frame, in radians.
+        phi: Pixel longitudes in the co-rotating frame, in radians.
+        vrot: Equatorial rotation velocity, in km/s.
+        inclination: Spin inclination angle in radians.
+        u1: First quadratic limb-darkening coefficient.
+        u2: Second quadratic limb-darkening coefficient.
+        phases: Rotational phases in cycles.
+        wavelengths: One-dimensional wavelength grid.
+        clear_profile: Rest-frame local spectrum for the clear atmospheric
+            column, sampled on ``wavelengths``.
+        cloudy_profile: Rest-frame local spectrum for the cloudy atmospheric
+            column, sampled on ``wavelengths``.
+        mean_cloud_fraction: Uniform baseline cloudy-column fraction ``f0``.
+        weights: Optional per-phase multiplicative weights.
+        pixel_area: Optional equal-area pixel solid-angle factor.
+
+    Returns:
+        A tuple ``(m0, W_delta)``. ``m0`` is the flattened spectrum from the
+        uniform baseline column mixture, and ``W_delta`` maps the pixel-level
+        cloud contrast map to the flattened residual spectrum.
+    """
     base_profile = (
         1.0 - mean_cloud_fraction
     ) * clear_profile + mean_cloud_fraction * cloudy_profile
