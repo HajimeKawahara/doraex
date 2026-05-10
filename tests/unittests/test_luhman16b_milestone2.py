@@ -55,6 +55,7 @@ def test_fixed_two_column_model_trace_smoke():
 
     assert trace["obs"]["value"].shape == (chip.flux.size,)
     assert trace["f_cloud"]["value"].shape == ()
+    assert trace["surface_scale"]["value"].shape == ()
     assert trace["log_w"]["value"].shape == (chip.flux.shape[0],)
 
 
@@ -75,5 +76,7 @@ def test_fixed_two_column_mcmc_smoke():
     samples = mcmc.get_samples()
 
     assert samples["f_cloud"].shape == (2,)
+    assert samples["surface_scale"].shape == (2,)
     assert samples["sigma_b"].shape == (2,)
     assert np.isfinite(np.asarray(samples["f_cloud"])).all()
+    assert np.isfinite(np.asarray(samples["surface_scale"])).all()

@@ -25,6 +25,8 @@ def luhman16b_ureshino_model(
     fixed_period=5.0,
     pixel_area=1.0,
     log_w_scale=0.1,
+    surface_scale_location=0.0077,
+    surface_scale_scale=0.3,
     gp_jitter=0.5e-6,
     noise_jitter=1.0e-6,
 ):
@@ -129,6 +131,8 @@ def fixed_two_column_doppler_model(
     fixed_period=5.0,
     pixel_area=1.0,
     log_w_scale=0.1,
+    surface_scale_location=0.0077,
+    surface_scale_scale=0.3,
     gp_jitter=0.5e-6,
     noise_jitter=1.0e-6,
 ):
@@ -155,6 +159,10 @@ def fixed_two_column_doppler_model(
         fixed_period: Period used when ``period_mode="fixed"``.
         pixel_area: Optional equal-area pixel solid-angle factor.
         log_w_scale: Standard deviation of the per-phase log scaling prior.
+        surface_scale_location: Median of the log-normal prior on the global
+            surface-brightness scale multiplying both fixed column spectra.
+        surface_scale_scale: Log-space standard deviation of the surface-scale
+            prior.
         gp_jitter: Diagonal jitter added to the cloud-map GP covariance.
         noise_jitter: Diagonal jitter added to the data noise variance.
 
@@ -184,6 +192,10 @@ def fixed_two_column_doppler_model(
         raise ValueError("period_mode must be 'sampled' or 'fixed'")
 
     mean_cloud_fraction = numpyro.sample("f_cloud", dist.Uniform(0.0, 1.0))
+    surface_scale = numpyro.sample(
+        "surface_scale",
+        dist.LogNormal(jnp.log(surface_scale_location), surface_scale_scale),
+    )
     baseline, contrast_matrix = two_column_operator_from_times(
         theta,
         phi,
@@ -200,6 +212,8 @@ def fixed_two_column_doppler_model(
         weights=weights,
         pixel_area=pixel_area,
     )
+    baseline = surface_scale * baseline
+    contrast_matrix = surface_scale * contrast_matrix
 
     sigma_d = numpyro.sample("sigma_d", dist.LogNormal(jnp.log(0.03), 1.0))
     noise_variance = diagonal_noise_variance(

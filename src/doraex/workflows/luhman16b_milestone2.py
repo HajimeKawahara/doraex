@@ -69,6 +69,7 @@ def make_fixed_two_column_nuts_kernel(
         "q2": 0.59,
         "log_w": jnp.zeros(n_phase),
         "f_cloud": 0.5,
+        "surface_scale": 0.0077,
         "sigma_d": 0.039,
         "sigma_b": 0.05,
         "ell_b": 0.4,
@@ -196,6 +197,7 @@ def _fixed_sample_at(samples, index):
         "u2",
         "log_w",
         "f_cloud",
+        "surface_scale",
         "sigma_d",
         "sigma_b",
         "ell_b",
@@ -221,7 +223,7 @@ def two_column_operator_from_sample(
     u1 = jnp.asarray(sample.get("u1", kipping_q_to_u(sample["q1"], sample["q2"])[0]))
     u2 = jnp.asarray(sample.get("u2", kipping_q_to_u(sample["q1"], sample["q2"])[1]))
     weights = jnp.exp(jnp.asarray(sample["log_w"]))
-    return two_column_operator_from_times(
+    baseline, contrast_matrix = two_column_operator_from_times(
         geometry.theta,
         geometry.phi,
         jnp.asarray(sample["v"]),
@@ -236,6 +238,8 @@ def two_column_operator_from_sample(
         jnp.asarray(sample["f_cloud"]),
         weights=weights,
     )
+    surface_scale = jnp.asarray(sample.get("surface_scale", 1.0))
+    return surface_scale * baseline, surface_scale * contrast_matrix
 
 
 def conditional_contrast_map_for_sample(
