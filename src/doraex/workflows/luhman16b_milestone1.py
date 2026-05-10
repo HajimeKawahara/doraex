@@ -41,6 +41,9 @@ def build_luhman16b_geometry(nside=8, order="ring"):
 
 def make_nuts_kernel(
     model,
+    n_phase,
+    period_mode="sampled",
+    fixed_period=5.0,
     target_accept_prob=0.9,
     dense_mass=True,
     max_tree_depth=10,
@@ -48,12 +51,20 @@ def make_nuts_kernel(
     """Create the NUTS kernel used for the Milestone 1 production run."""
 
     init_values = {
-        "cosi": 0.5,
-        "v": 30.0,
-        "q1": 0.5,
-        "q2": 0.5,
-        "sigma_d": 0.01,
+        "cosi": 0.485,
+        "v": 31.2,
+        "q1": 0.81,
+        "q2": 0.59,
+        "log_w": jnp.zeros(n_phase),
+        "sigma_d": 0.039,
+        "mu_a": 0.0077,
+        "sigma_a": 0.001,
+        "ell": 0.4,
     }
+    if period_mode == "sampled":
+        init_values["P"] = 4.83
+    elif period_mode == "fixed":
+        init_values["P"] = fixed_period
     return NUTS(
         model,
         target_accept_prob=target_accept_prob,
@@ -118,6 +129,9 @@ def run_luhman16b_mcmc(
 
     kernel = make_nuts_kernel(
         model,
+        n_phase=chip_data.flux.shape[0],
+        period_mode=period_mode,
+        fixed_period=fixed_period,
         target_accept_prob=target_accept_prob,
         dense_mass=dense_mass,
         max_tree_depth=max_tree_depth,
