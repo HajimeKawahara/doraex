@@ -27,7 +27,7 @@ def parse_args():
     )
     parser.add_argument(
         "--data-dir",
-        default=str(ROOT / "external" / "BayesianDI" / "data"),
+        default=str(ROOT / "data"),
         help="Directory containing fainterspectral-fits_6.pickle and posterior_predictive_vsini=0.npz.",
     )
     parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone1"))

@@ -30,7 +30,7 @@ def parse_args():
     )
     parser.add_argument(
         "--data-dir",
-        default=str(ROOT / "external" / "BayesianDI" / "data"),
+        default=str(ROOT / "data"),
     )
     parser.add_argument(
         "--samples",

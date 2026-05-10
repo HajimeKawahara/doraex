@@ -20,7 +20,7 @@ from doraex.workflows.luhman16b_milestone1 import (
 jax.config.update("jax_enable_x64", True)
 
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "external" / "BayesianDI" / "data"
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
 pytestmark = pytest.mark.skipif(
