@@ -197,3 +197,52 @@ python examples/luhman16b_yama/make_milestone2_free_cloud_products.py \
   --out-dir results/milestone2_2a \
   --max-map-samples 1000
 ```
+
+## Milestone 2-2b
+
+Milestone 2-2b keeps the Milestone 2-2a stabilized sampler, but widens the
+cloud-top pressure range to the Yama-style interval `log10 Pc in [-2, 2]`.
+The atmospheric power-law parameters, cloud width, cloud column optical depth,
+geometry, period, and cloud-map correlation length remain fixed.
+
+Generate the wide cloudy grid:
+
+```bash
+python examples/luhman16b_yama/generate_milestone2_cloud_grid_profiles.py \
+  --m2-2b \
+  --chip-index 1 \
+  --opacity-cache-dir data/opacities/luhman16b_powerlaw \
+  --database-dir ~/data_mol/.database
+```
+
+Run the wide free-cloud NUTS analysis:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_free_cloud.py \
+  --m2-2b \
+  --nside 8 \
+  --chip-index 1 \
+  --num-warmup 1500 \
+  --num-samples 1000 \
+  --target-accept-prob 0.98 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.4 \
+  --fix-geometry-to-milestone1
+```
+
+Build maps, spectra, and wide-prior diagnostics:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_free_cloud_products.py \
+  --m2-2b \
+  --nside 8 \
+  --chip-index 1 \
+  --max-map-samples 1000
+```
+
+Inspect `free_cloud_diagnostics_chip1.json` for boundary sticking in
+`log10 Pc`, cloud-fraction excursions outside `[0, 1]`, clipping shifts, and
+posterior correlations among `log10 Pc`, `f_cloud`, `sigma_b`, and
+`surface_scale`.

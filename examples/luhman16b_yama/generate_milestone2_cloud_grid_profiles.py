@@ -23,6 +23,9 @@ from doraex.spectra.exojax_forward import (  # noqa: E402
     synthetic_cloud_profile_grid,
 )
 
+DEFAULT_M22A_OUT = ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"
+DEFAULT_M22B_OUT = ROOT / "data" / "milestone2_cloud_grid_profiles_wide_chip1.npz"
+
 
 def parse_args():
     """Parse command-line arguments."""
@@ -34,7 +37,12 @@ def parse_args():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--out",
-        default=str(ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"),
+        default=str(DEFAULT_M22A_OUT),
+    )
+    parser.add_argument(
+        "--m2-2b",
+        action="store_true",
+        help="Use Milestone 2-2b wide-cloud defaults.",
     )
     parser.add_argument("--chip-index", type=int, default=1)
     parser.add_argument(
@@ -50,7 +58,17 @@ def parse_args():
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.m2_2b:
+        if args.out == str(DEFAULT_M22A_OUT):
+            args.out = str(DEFAULT_M22B_OUT)
+        if args.log_p_cloud_min == 0.0:
+            args.log_p_cloud_min = -2.0
+        if args.log_p_cloud_max == 2.0:
+            args.log_p_cloud_max = 2.0
+        if args.log_p_cloud_count == 17:
+            args.log_p_cloud_count = 33
+    return args
 
 
 def _molecule_paths(database_dir):

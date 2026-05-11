@@ -1,6 +1,7 @@
-"""Create Milestone 2-2a free-cloud diagnostic products."""
+"""Create Milestone 2-2 free-cloud diagnostic products."""
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -25,25 +26,39 @@ from make_milestone2_fixed_products import (  # noqa: E402
     _write_cloud_fraction_diagnostics,
 )
 
+DEFAULT_M22A_SAMPLES = (
+    ROOT / "results" / "milestone2_2a" / "mcmc_chip1_fixed_free_cloud.npz"
+)
+DEFAULT_M22B_SAMPLES = (
+    ROOT / "results" / "milestone2_2b" / "mcmc_chip1_fixed_free_cloud_wide.npz"
+)
+DEFAULT_M22A_GRID = ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"
+DEFAULT_M22B_GRID = ROOT / "data" / "milestone2_cloud_grid_profiles_wide_chip1.npz"
+DEFAULT_M22A_OUT = ROOT / "results" / "milestone2_2a"
+DEFAULT_M22B_OUT = ROOT / "results" / "milestone2_2b"
+
 
 def parse_args():
     """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
-        description="Build Milestone 2-2a maps and spectral residual diagnostics."
+        description="Build Milestone 2-2 maps and spectral residual diagnostics."
     )
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--samples",
-        default=str(
-            ROOT / "results" / "milestone2_2a" / "mcmc_chip1_fixed_free_cloud.npz"
-        ),
+        default=str(DEFAULT_M22A_SAMPLES),
     )
     parser.add_argument(
         "--profile-grid",
-        default=str(ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"),
+        default=str(DEFAULT_M22A_GRID),
     )
-    parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_2a"))
+    parser.add_argument("--out-dir", default=str(DEFAULT_M22A_OUT))
+    parser.add_argument(
+        "--m2-2b",
+        action="store_true",
+        help="Use Milestone 2-2b wide-cloud defaults.",
+    )
     parser.add_argument("--chip-index", type=int, default=1)
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument(
@@ -56,7 +71,15 @@ def parse_args():
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.m2_2b:
+        if args.samples == str(DEFAULT_M22A_SAMPLES):
+            args.samples = str(DEFAULT_M22B_SAMPLES)
+        if args.profile_grid == str(DEFAULT_M22A_GRID):
+            args.profile_grid = str(DEFAULT_M22B_GRID)
+        if args.out_dir == str(DEFAULT_M22A_OUT):
+            args.out_dir = str(DEFAULT_M22B_OUT)
+    return args
 
 
 def _select_sample_indices(sample_count, max_map_samples):
@@ -76,8 +99,86 @@ def _interpolate_profile_grid(parameter_grid, profile_grid, parameter):
     return (1.0 - fraction) * profile_grid[index] + fraction * profile_grid[index + 1]
 
 
+def _safe_correlation(x, y):
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if x.size < 2 or y.size < 2:
+        return None
+    if np.std(x) == 0.0 or np.std(y) == 0.0:
+        return None
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def _write_free_cloud_diagnostics(
+    path,
+    samples,
+    cloud_mean,
+    cloud_std,
+    clipped_cloud_mean,
+    log_p_cloud_grid,
+):
+    log_p_cloud = np.asarray(samples["log_p_cloud"], dtype=float)
+    bounds = np.asarray(
+        samples.get(
+            "log_p_cloud_bounds",
+            np.asarray([np.min(log_p_cloud_grid), np.max(log_p_cloud_grid)]),
+        ),
+        dtype=float,
+    )
+    lower, upper = float(bounds[0]), float(bounds[1])
+    width = upper - lower
+    edge_width = 0.05 * width if width > 0.0 else 0.0
+    diagnostics = {
+        "log_p_cloud_min": float(np.min(log_p_cloud)),
+        "log_p_cloud_max": float(np.max(log_p_cloud)),
+        "log_p_cloud_median": float(np.median(log_p_cloud)),
+        "log_p_cloud_q16": float(np.quantile(log_p_cloud, 0.16)),
+        "log_p_cloud_q84": float(np.quantile(log_p_cloud, 0.84)),
+        "log_p_cloud_prior_lower": lower,
+        "log_p_cloud_prior_upper": upper,
+        "fraction_log_p_cloud_near_lower_edge": float(
+            np.mean(log_p_cloud <= lower + edge_width)
+        ),
+        "fraction_log_p_cloud_near_upper_edge": float(
+            np.mean(log_p_cloud >= upper - edge_width)
+        ),
+        "cloud_fraction_mean_min": float(np.min(cloud_mean)),
+        "cloud_fraction_mean_max": float(np.max(cloud_mean)),
+        "cloud_fraction_std_min": float(np.min(cloud_std)),
+        "cloud_fraction_std_max": float(np.max(cloud_std)),
+        "fraction_pixels_below_zero": float(np.mean(cloud_mean < 0.0)),
+        "fraction_pixels_above_one": float(np.mean(cloud_mean > 1.0)),
+        "mean_abs_clipping_shift": float(
+            np.mean(np.abs(clipped_cloud_mean - cloud_mean))
+        ),
+        "max_abs_clipping_shift": float(
+            np.max(np.abs(clipped_cloud_mean - cloud_mean))
+        ),
+        "corr_log_p_cloud_f_cloud": _safe_correlation(
+            log_p_cloud,
+            samples["f_cloud"],
+        ),
+        "corr_log_p_cloud_sigma_b": _safe_correlation(
+            log_p_cloud,
+            samples["sigma_b"],
+        ),
+        "corr_log_p_cloud_surface_scale": _safe_correlation(
+            log_p_cloud,
+            samples["surface_scale"],
+        ),
+        "corr_f_cloud_sigma_b": _safe_correlation(
+            samples["f_cloud"],
+            samples["sigma_b"],
+        ),
+        "log_p_cloud_grid_min": float(np.min(log_p_cloud_grid)),
+        "log_p_cloud_grid_max": float(np.max(log_p_cloud_grid)),
+        "log_p_cloud_grid_count": int(len(log_p_cloud_grid)),
+    }
+    path.write_text(json.dumps(diagnostics, indent=2) + "\n", encoding="utf-8")
+
+
 def main():
-    """Compute and save Milestone 2-2a diagnostic products."""
+    """Compute and save Milestone 2-2 diagnostic products."""
 
     args = parse_args()
     jax.config.update("jax_enable_x64", args.x64)
@@ -85,6 +186,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     profile_grid_path = None if args.smoke_test else args.profile_grid
+    smoke_log_p_cloud_grid = None
+    if args.smoke_test and args.m2_2b:
+        smoke_log_p_cloud_grid = np.linspace(-2.0, 2.0, 5)
     chip_data, geometry, clear_profile, log_p_cloud_grid, cloudy_profile_grid = (
         load_milestone2_free_cloud_inputs(
             args.data_dir,
@@ -94,6 +198,7 @@ def main():
             smoke_test=args.smoke_test,
             smoke_wavelength_step=args.smoke_wavelength_step,
             smoke_phase_count=args.smoke_phase_count,
+            smoke_log_p_cloud_grid=smoke_log_p_cloud_grid,
         )
     )
     samples = dict(np.load(args.samples, allow_pickle=False))
@@ -187,6 +292,14 @@ def main():
         cloud_mean,
         cloud_std,
         contrast_mean,
+    )
+    _write_free_cloud_diagnostics(
+        out_dir / f"free_cloud_diagnostics_chip{args.chip_index}.json",
+        samples,
+        cloud_mean,
+        cloud_std,
+        clipped_cloud_mean,
+        log_p_cloud_grid,
     )
     print(f"Products saved to {out_dir}")
 

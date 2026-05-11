@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 import jax
+import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,20 +19,30 @@ from doraex.workflows.luhman16b_milestone2 import (  # noqa: E402
     save_free_cloud_two_column_samples,
 )
 
+DEFAULT_M22A_GRID = ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"
+DEFAULT_M22B_GRID = ROOT / "data" / "milestone2_cloud_grid_profiles_wide_chip1.npz"
+DEFAULT_M22A_OUT = ROOT / "results" / "milestone2_2a"
+DEFAULT_M22B_OUT = ROOT / "results" / "milestone2_2b"
+
 
 def parse_args():
     """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
-        description="Run Milestone 2-2a with free cloud-top pressure."
+        description="Run Milestone 2-2 free cloud-top pressure retrieval."
     )
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--profile-grid",
-        default=str(ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"),
+        default=str(DEFAULT_M22A_GRID),
         help="NPZ file with clear_profile and cloudy_profile_grid.",
     )
-    parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_2a"))
+    parser.add_argument("--out-dir", default=str(DEFAULT_M22A_OUT))
+    parser.add_argument(
+        "--m2-2b",
+        action="store_true",
+        help="Use Milestone 2-2b wide-cloud defaults.",
+    )
     parser.add_argument("--chip-index", type=int, default=1)
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--num-warmup", type=int, default=1500)
@@ -70,7 +81,17 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.m2_2b:
+        if args.profile_grid == str(DEFAULT_M22A_GRID):
+            args.profile_grid = str(DEFAULT_M22B_GRID)
+        if args.out_dir == str(DEFAULT_M22A_OUT):
+            args.out_dir = str(DEFAULT_M22B_OUT)
+        if args.log_p_cloud_min == 0.0:
+            args.log_p_cloud_min = -2.0
+        if args.log_p_cloud_max == 2.0:
+            args.log_p_cloud_max = 2.0
+    return args
 
 
 def main():
@@ -79,6 +100,13 @@ def main():
     args = parse_args()
     jax.config.update("jax_enable_x64", args.x64)
     profile_grid_path = None if args.smoke_test else args.profile_grid
+    smoke_log_p_cloud_grid = None
+    if args.smoke_test and args.m2_2b:
+        smoke_log_p_cloud_grid = np.linspace(
+            args.log_p_cloud_min,
+            args.log_p_cloud_max,
+            5,
+        )
     chip_data, geometry, clear_profile, log_p_cloud_grid, cloudy_profile_grid = (
         load_milestone2_free_cloud_inputs(
             args.data_dir,
@@ -88,6 +116,7 @@ def main():
             smoke_test=args.smoke_test,
             smoke_wavelength_step=args.smoke_wavelength_step,
             smoke_phase_count=args.smoke_phase_count,
+            smoke_log_p_cloud_grid=smoke_log_p_cloud_grid,
         )
     )
 
@@ -134,7 +163,8 @@ def main():
     elif args.print_summary:
         print("Skipping MCMC summary because num_samples < 4.")
 
-    suffix = "_smoke" if args.smoke_test else ""
+    milestone_suffix = "_wide" if args.m2_2b else ""
+    suffix = f"{milestone_suffix}_smoke" if args.smoke_test else milestone_suffix
     output_path = (
         Path(args.out_dir)
         / f"mcmc_chip{args.chip_index}_{args.period_mode}_free_cloud{suffix}.npz"

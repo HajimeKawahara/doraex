@@ -243,12 +243,20 @@ def run_free_cloud_two_column_mcmc(
     fixed_q2=0.59,
     progress_bar=True,
 ):
-    """Run Milestone 2-2a with free cloud-top pressure."""
+    """Run Milestone 2-2 with free cloud-top pressure."""
 
     data = jnp.asarray(chip_data.flux)
     obs_times = jnp.asarray(chip_data.obs_times)
     wavelengths = jnp.asarray(chip_data.wavelengths)
     clear_profile = jnp.asarray(clear_profile)
+    log_p_cloud_grid_np = np.asarray(log_p_cloud_grid)
+    grid_min = float(np.min(log_p_cloud_grid_np))
+    grid_max = float(np.max(log_p_cloud_grid_np))
+    if log_p_cloud_bounds[0] < grid_min or log_p_cloud_bounds[1] > grid_max:
+        raise ValueError(
+            "log_p_cloud_bounds must be covered by log_p_cloud_grid: "
+            f"bounds={log_p_cloud_bounds}, grid=({grid_min}, {grid_max})"
+        )
     log_p_cloud_grid = jnp.asarray(log_p_cloud_grid)
     cloudy_profile_grid = jnp.asarray(cloudy_profile_grid)
 
