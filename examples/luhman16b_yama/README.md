@@ -128,3 +128,72 @@ The Milestone 2-1 product generator also writes
 `figure8_cloud_fraction_clipped_chip1.png` and
 `cloud_fraction_diagnostics_chip1.json` so cloud-fraction excursions outside
 the physical interval can be checked directly.
+
+## Milestone 2-2a
+
+Milestone 2-2a keeps the stabilized Milestone 2-1 geometry, period, and
+cloud-map correlation length, but samples the cloud-top pressure `log10 Pc`.
+The cloudy local spectra are precomputed on a `log10 Pc` grid and interpolated
+inside NUTS.
+
+Generate a smoke-test cloudy grid:
+
+```bash
+python examples/luhman16b_yama/generate_milestone2_cloud_grid_profiles.py \
+  --smoke-test \
+  --out results/milestone2_2a_smoke/cloud_grid_profiles_smoke.npz
+```
+
+Run a reduced NUTS smoke test:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_free_cloud.py \
+  --smoke-test \
+  --nside 1 \
+  --num-warmup 2 \
+  --num-samples 2 \
+  --out-dir results/milestone2_2a_smoke
+```
+
+For production, first generate the full cloudy grid:
+
+```bash
+python examples/luhman16b_yama/generate_milestone2_cloud_grid_profiles.py \
+  --chip-index 1 \
+  --out data/milestone2_cloud_grid_profiles_chip1.npz \
+  --opacity-cache-dir data/opacities/luhman16b_powerlaw \
+  --database-dir ~/data_mol/.database \
+  --log-p-cloud-min 0.0 \
+  --log-p-cloud-max 2.0 \
+  --log-p-cloud-count 17
+```
+
+Then run the stabilized free-cloud NUTS analysis:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_free_cloud.py \
+  --nside 8 \
+  --chip-index 1 \
+  --profile-grid data/milestone2_cloud_grid_profiles_chip1.npz \
+  --num-warmup 1500 \
+  --num-samples 1000 \
+  --target-accept-prob 0.98 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.4 \
+  --fix-geometry-to-milestone1 \
+  --out-dir results/milestone2_2a
+```
+
+Build the corresponding diagnostics:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_free_cloud_products.py \
+  --nside 8 \
+  --chip-index 1 \
+  --profile-grid data/milestone2_cloud_grid_profiles_chip1.npz \
+  --samples results/milestone2_2a/mcmc_chip1_fixed_free_cloud.npz \
+  --out-dir results/milestone2_2a \
+  --max-map-samples 1000
+```

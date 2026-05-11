@@ -9,10 +9,19 @@ import pytest
 from numpyro import handlers
 
 from doraex.data.luhman16b import load_luhman16b_chip, subset_chip_data
-from doraex.inference.numpyro_models import fixed_two_column_doppler_model
-from doraex.spectra.exojax_forward import synthetic_two_column_profiles
+from doraex.inference.numpyro_models import (
+    fixed_two_column_doppler_model,
+    free_cloud_two_column_doppler_model,
+)
+from doraex.spectra.exojax_forward import (
+    synthetic_cloud_profile_grid,
+    synthetic_two_column_profiles,
+)
 from doraex.workflows.luhman16b_milestone1 import build_luhman16b_geometry
-from doraex.workflows.luhman16b_milestone2 import run_fixed_two_column_mcmc
+from doraex.workflows.luhman16b_milestone2 import (
+    run_fixed_two_column_mcmc,
+    run_free_cloud_two_column_mcmc,
+)
 
 
 jax.config.update("jax_enable_x64", True)
@@ -88,3 +97,59 @@ def test_fixed_two_column_mcmc_smoke():
     assert samples["sigma_b"].shape == (2,)
     assert np.isfinite(np.asarray(samples["f_cloud"])).all()
     assert np.isfinite(np.asarray(samples["surface_scale"])).all()
+
+
+def test_free_cloud_two_column_model_trace_smoke():
+    chip, geometry, _, _ = _small_inputs()
+    log_p_cloud_grid = np.linspace(0.0, 2.0, 5)
+    clear_profile, cloudy_profile_grid = synthetic_cloud_profile_grid(
+        chip.wavelengths,
+        log_p_cloud_grid,
+    )
+    seeded_model = handlers.seed(
+        free_cloud_two_column_doppler_model,
+        jax.random.PRNGKey(0),
+    )
+    trace = handlers.trace(seeded_model).get_trace(
+        jnp.asarray(chip.flux),
+        geometry.theta,
+        geometry.phi,
+        geometry.distance_matrix,
+        jnp.asarray(chip.obs_times),
+        jnp.asarray(chip.wavelengths),
+        jnp.asarray(clear_profile),
+        jnp.asarray(log_p_cloud_grid),
+        jnp.asarray(cloudy_profile_grid),
+        period_mode="fixed",
+    )
+
+    assert trace["obs"]["value"].shape == (chip.flux.size,)
+    assert trace["log_p_cloud"]["value"].shape == ()
+    assert trace["f_cloud"]["value"].shape == ()
+    assert trace["surface_scale"]["value"].shape == ()
+
+
+def test_free_cloud_two_column_mcmc_smoke():
+    chip, geometry, _, _ = _small_inputs()
+    log_p_cloud_grid = np.linspace(0.0, 2.0, 5)
+    clear_profile, cloudy_profile_grid = synthetic_cloud_profile_grid(
+        chip.wavelengths,
+        log_p_cloud_grid,
+    )
+    mcmc = run_free_cloud_two_column_mcmc(
+        chip,
+        geometry,
+        clear_profile,
+        log_p_cloud_grid,
+        cloudy_profile_grid,
+        num_warmup=2,
+        num_samples=2,
+        dense_mass=False,
+        max_tree_depth=3,
+        progress_bar=False,
+    )
+    samples = mcmc.get_samples()
+
+    assert samples["log_p_cloud"].shape == (2,)
+    assert samples["f_cloud"].shape == (2,)
+    assert np.isfinite(np.asarray(samples["log_p_cloud"])).all()

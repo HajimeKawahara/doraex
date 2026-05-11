@@ -13,6 +13,20 @@ from doraex.operators.design_matrix import (
 from doraex.priors.spherical_gp import add_diagonal_jitter, squared_exponential_covariance
 
 
+def _interpolate_profile_grid(parameter_grid, profile_grid, parameter):
+    """Linearly interpolate a precomputed one-parameter profile grid."""
+
+    parameter_grid = jnp.asarray(parameter_grid)
+    profile_grid = jnp.asarray(profile_grid)
+    parameter = jnp.asarray(parameter)
+    index = jnp.searchsorted(parameter_grid, parameter, side="right") - 1
+    index = jnp.clip(index, 0, parameter_grid.shape[0] - 2)
+    left = parameter_grid[index]
+    right = parameter_grid[index + 1]
+    fraction = (parameter - left) / (right - left)
+    return (1.0 - fraction) * profile_grid[index] + fraction * profile_grid[index + 1]
+
+
 def luhman16b_ureshino_model(
     data,
     theta,
@@ -263,4 +277,114 @@ def fixed_two_column_doppler_model(
             cov_diag=noise_variance,
         ),
         obs=data.reshape(-1),
+    )
+
+
+def free_cloud_two_column_doppler_model(
+    data,
+    theta,
+    phi,
+    distance_matrix,
+    obs_times,
+    wavelengths,
+    clear_profile,
+    log_p_cloud_grid,
+    cloudy_profile_grid,
+    period_mode="fixed",
+    fixed_period=4.83,
+    log_p_cloud_bounds=(0.0, 2.0),
+    pixel_area=1.0,
+    log_w_scale=0.1,
+    surface_scale_location=0.0077,
+    surface_scale_scale=0.3,
+    sigma_b_scale=0.1,
+    fixed_ell_b=0.4,
+    fix_geometry=True,
+    fixed_cosi=0.485,
+    fixed_v=31.2,
+    fixed_q1=0.81,
+    fixed_q2=0.59,
+    gp_jitter=0.5e-6,
+    noise_jitter=1.0e-6,
+):
+    """Two-column Doppler retrieval with free cloud-top pressure.
+
+    This is the Milestone 2-2a model. The clear spectrum and a grid of cloudy
+    spectra are precomputed outside NUTS. NUTS samples ``log10 Pc`` and
+    linearly interpolates the cloudy local spectrum inside the JAX graph, while
+    the cloud-fraction contrast map remains analytically marginalized.
+
+    Args:
+        data: Observed phase-resolved spectra with shape
+            ``(n_phase, n_wavelength)``.
+        theta: HEALPix pixel colatitudes in radians.
+        phi: HEALPix pixel longitudes in radians.
+        distance_matrix: Pairwise angular distances between pixels, in radians.
+        obs_times: Observation timestamps in the same units as the period.
+        wavelengths: One-dimensional wavelength grid.
+        clear_profile: Fixed clear-sky spectrum sampled on ``wavelengths``.
+        log_p_cloud_grid: Monotonic grid of precomputed ``log10 Pc`` values.
+        cloudy_profile_grid: Cloudy spectra with shape
+            ``(n_log_p_cloud, n_wavelength)``.
+        period_mode: ``"sampled"`` samples ``P ~ Uniform(4.8, 5.4)``.
+            ``"fixed"`` records ``fixed_period`` as deterministic ``P``.
+        fixed_period: Period used when ``period_mode="fixed"``.
+        log_p_cloud_bounds: Uniform prior bounds for ``log10 Pc``.
+        pixel_area: Optional equal-area pixel solid-angle factor.
+        log_w_scale: Standard deviation of the per-phase log scaling prior.
+        surface_scale_location: Median of the log-normal prior on the global
+            surface-brightness scale.
+        surface_scale_scale: Log-space standard deviation of the surface-scale
+            prior.
+        sigma_b_scale: Scale of the half-normal prior on cloud-fraction
+            contrast-map variations.
+        fixed_ell_b: Optional fixed cloud-map correlation length in radians.
+            When omitted, ``ell_b`` is sampled.
+        fix_geometry: If true, fix ``cosi``, ``v``, ``q1``, and ``q2`` to the
+            provided values.
+        fixed_cosi: Fixed cosine inclination used when ``fix_geometry`` is true.
+        fixed_v: Fixed equatorial rotation velocity in km/s used when
+            ``fix_geometry`` is true.
+        fixed_q1: Fixed Kipping ``q1`` used when ``fix_geometry`` is true.
+        fixed_q2: Fixed Kipping ``q2`` used when ``fix_geometry`` is true.
+        gp_jitter: Diagonal jitter added to the cloud-map GP covariance.
+        noise_jitter: Diagonal jitter added to the data noise variance.
+
+    Returns:
+        None. The function defines a NumPyro probabilistic model.
+    """
+
+    log_p_cloud = numpyro.sample(
+        "log_p_cloud",
+        dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]),
+    )
+    cloudy_profile = _interpolate_profile_grid(
+        log_p_cloud_grid,
+        cloudy_profile_grid,
+        log_p_cloud,
+    )
+    return fixed_two_column_doppler_model(
+        data,
+        theta,
+        phi,
+        distance_matrix,
+        obs_times,
+        wavelengths,
+        clear_profile,
+        cloudy_profile,
+        period_mode=period_mode,
+        fixed_period=fixed_period,
+        pixel_area=pixel_area,
+        log_w_scale=log_w_scale,
+        surface_scale_location=surface_scale_location,
+        surface_scale_scale=surface_scale_scale,
+        sigma_b_scale=sigma_b_scale,
+        fixed_ell_b=fixed_ell_b,
+        fix_geometry=fix_geometry,
+        fixed_cosi=fixed_cosi,
+        fixed_v=fixed_v,
+        fixed_q1=fixed_q1,
+        fixed_q2=fixed_q2,
+        gp_jitter=gp_jitter,
+        noise_jitter=noise_jitter,
     )

@@ -48,6 +48,41 @@ def synthetic_two_column_profiles(wavelengths, line_center=None):
     return clear, cloudy
 
 
+def synthetic_cloud_profile_grid(wavelengths, log_p_cloud_grid, line_center=None):
+    """Build lightweight cloudy-profile grid for Milestone 2-2 smoke tests.
+
+    Args:
+        wavelengths: One-dimensional wavelength grid.
+        log_p_cloud_grid: Grid of ``log10 Pc`` values.
+        line_center: Optional center of the synthetic absorption feature. If
+            omitted, the midpoint of ``wavelengths`` is used.
+
+    Returns:
+        A tuple ``(clear_profile, cloudy_profile_grid)``. The cloudy grid has
+        shape ``(n_log_p_cloud, n_wavelength)``.
+    """
+
+    wavelengths = np.asarray(wavelengths)
+    log_p_cloud_grid = np.asarray(log_p_cloud_grid)
+    clear_profile, _ = synthetic_two_column_profiles(
+        wavelengths, line_center=line_center
+    )
+    center = float(np.mean(wavelengths) if line_center is None else line_center)
+    width = 0.12 * (float(np.max(wavelengths)) - float(np.min(wavelengths)))
+    if width <= 0.0:
+        width = 1.0
+    profiles = []
+    for log_p_cloud in log_p_cloud_grid:
+        depth_scale = 0.75 + 0.25 * np.tanh(float(log_p_cloud) - 1.0)
+        width_scale = 1.15 + 0.15 * np.tanh(1.0 - float(log_p_cloud))
+        continuum = 0.96 - 0.015 * np.tanh(float(log_p_cloud) - 1.0)
+        gaussian = np.exp(
+            -0.5 * ((wavelengths - center) / (width_scale * width)) ** 2
+        )
+        profiles.append(continuum - 0.16 * depth_scale * gaussian)
+    return clear_profile, np.asarray(profiles)
+
+
 def save_two_column_profiles(path, wavelengths, clear_profile, cloudy_profile, metadata=None):
     """Save fixed clear/cloudy profiles to an NPZ file."""
 
@@ -57,6 +92,30 @@ def save_two_column_profiles(path, wavelengths, clear_profile, cloudy_profile, m
         "wavelengths": np.asarray(wavelengths),
         "clear_profile": np.asarray(clear_profile),
         "cloudy_profile": np.asarray(cloudy_profile),
+    }
+    if metadata:
+        for key, value in metadata.items():
+            payload[key] = np.asarray(value)
+    np.savez(path, **payload)
+
+
+def save_cloud_profile_grid(
+    path,
+    wavelengths,
+    clear_profile,
+    log_p_cloud_grid,
+    cloudy_profile_grid,
+    metadata=None,
+):
+    """Save clear spectrum and cloudy profile grid to an NPZ file."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "wavelengths": np.asarray(wavelengths),
+        "clear_profile": np.asarray(clear_profile),
+        "log_p_cloud_grid": np.asarray(log_p_cloud_grid),
+        "cloudy_profile_grid": np.asarray(cloudy_profile_grid),
     }
     if metadata:
         for key, value in metadata.items():
@@ -84,6 +143,31 @@ def load_two_column_profiles(path, expected_wavelengths=None):
     ):
         raise ValueError("Profile wavelength grid does not match the data wavelength grid.")
     return profiles["clear_profile"], profiles["cloudy_profile"]
+
+
+def load_cloud_profile_grid(path, expected_wavelengths=None):
+    """Load clear spectrum and cloudy profile grid from an NPZ file.
+
+    Args:
+        path: NPZ file containing ``wavelengths``, ``clear_profile``,
+            ``log_p_cloud_grid``, and ``cloudy_profile_grid``.
+        expected_wavelengths: Optional grid used to validate loaded profiles.
+
+    Returns:
+        A tuple ``(clear_profile, log_p_cloud_grid, cloudy_profile_grid)``.
+    """
+
+    profiles = np.load(path)
+    wavelengths = profiles["wavelengths"]
+    if expected_wavelengths is not None and not np.allclose(
+        wavelengths, np.asarray(expected_wavelengths)
+    ):
+        raise ValueError("Profile wavelength grid does not match the data wavelength grid.")
+    return (
+        profiles["clear_profile"],
+        profiles["log_p_cloud_grid"],
+        profiles["cloudy_profile_grid"],
+    )
 
 
 class Luhman16BPowerLawColumnModel:
