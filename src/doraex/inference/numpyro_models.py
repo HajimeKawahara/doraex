@@ -133,6 +133,13 @@ def fixed_two_column_doppler_model(
     log_w_scale=0.1,
     surface_scale_location=0.0077,
     surface_scale_scale=0.3,
+    sigma_b_scale=0.3,
+    fixed_ell_b=None,
+    fix_geometry=False,
+    fixed_cosi=0.485,
+    fixed_v=31.2,
+    fixed_q1=0.81,
+    fixed_q2=0.59,
     gp_jitter=0.5e-6,
     noise_jitter=1.0e-6,
 ):
@@ -163,6 +170,17 @@ def fixed_two_column_doppler_model(
             surface-brightness scale multiplying both fixed column spectra.
         surface_scale_scale: Log-space standard deviation of the surface-scale
             prior.
+        sigma_b_scale: Scale of the half-normal prior on cloud-fraction
+            contrast-map variations.
+        fixed_ell_b: Optional fixed cloud-map correlation length in radians.
+            When omitted, ``ell_b`` is sampled.
+        fix_geometry: If true, fix ``cosi``, ``v``, ``q1``, and ``q2`` to the
+            provided Milestone-1-like values.
+        fixed_cosi: Fixed cosine inclination used when ``fix_geometry`` is true.
+        fixed_v: Fixed equatorial rotation velocity in km/s used when
+            ``fix_geometry`` is true.
+        fixed_q1: Fixed Kipping ``q1`` used when ``fix_geometry`` is true.
+        fixed_q2: Fixed Kipping ``q2`` used when ``fix_geometry`` is true.
         gp_jitter: Diagonal jitter added to the cloud-map GP covariance.
         noise_jitter: Diagonal jitter added to the data noise variance.
 
@@ -171,12 +189,18 @@ def fixed_two_column_doppler_model(
     """
 
     n_phase = data.shape[0]
-    cosi = numpyro.sample("cosi", dist.Uniform(0.0, 1.0))
+    if fix_geometry:
+        cosi = numpyro.deterministic("cosi", jnp.asarray(fixed_cosi))
+        vrot = numpyro.deterministic("v", jnp.asarray(fixed_v))
+        q1 = numpyro.deterministic("q1", jnp.asarray(fixed_q1))
+        q2 = numpyro.deterministic("q2", jnp.asarray(fixed_q2))
+    else:
+        cosi = numpyro.sample("cosi", dist.Uniform(0.0, 1.0))
+        vrot = numpyro.sample("v", dist.Uniform(0.0, 120.0))
+        q1 = numpyro.sample("q1", dist.Uniform(0.0, 1.0))
+        q2 = numpyro.sample("q2", dist.Uniform(0.0, 1.0))
     inclination = jnp.arccos(cosi)
-    vrot = numpyro.sample("v", dist.Uniform(0.0, 120.0))
 
-    q1 = numpyro.sample("q1", dist.Uniform(0.0, 1.0))
-    q2 = numpyro.sample("q2", dist.Uniform(0.0, 1.0))
     u1, u2 = kipping_q_to_u(q1, q2)
     numpyro.deterministic("u1", u1)
     numpyro.deterministic("u2", u2)
@@ -220,8 +244,11 @@ def fixed_two_column_doppler_model(
         contrast_matrix.shape[0], sigma_d, jitter=noise_jitter
     )
 
-    sigma_b = numpyro.sample("sigma_b", dist.HalfNormal(0.3))
-    ell_b = numpyro.sample("ell_b", dist.Uniform(0.1, 1.5))
+    sigma_b = numpyro.sample("sigma_b", dist.HalfNormal(sigma_b_scale))
+    if fixed_ell_b is None:
+        ell_b = numpyro.sample("ell_b", dist.Uniform(0.1, 1.5))
+    else:
+        ell_b = numpyro.deterministic("ell_b", jnp.asarray(fixed_ell_b))
     contrast_covariance = add_diagonal_jitter(
         squared_exponential_covariance(distance_matrix, sigma_b, ell_b),
         jitter=gp_jitter,

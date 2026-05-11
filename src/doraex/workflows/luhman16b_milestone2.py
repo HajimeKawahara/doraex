@@ -56,6 +56,8 @@ def make_fixed_two_column_nuts_kernel(
     n_phase,
     period_mode="sampled",
     fixed_period=5.0,
+    fixed_ell_b=None,
+    fix_geometry=False,
     target_accept_prob=0.9,
     dense_mass=True,
     max_tree_depth=10,
@@ -63,17 +65,23 @@ def make_fixed_two_column_nuts_kernel(
     """Create the NUTS kernel for Milestone 2-1."""
 
     init_values = {
-        "cosi": 0.485,
-        "v": 31.2,
-        "q1": 0.81,
-        "q2": 0.59,
         "log_w": jnp.zeros(n_phase),
         "f_cloud": 0.5,
         "surface_scale": 0.0077,
         "sigma_d": 0.039,
         "sigma_b": 0.05,
-        "ell_b": 0.4,
     }
+    if not fix_geometry:
+        init_values.update(
+            {
+                "cosi": 0.485,
+                "v": 31.2,
+                "q1": 0.81,
+                "q2": 0.59,
+            }
+        )
+    if fixed_ell_b is None:
+        init_values["ell_b"] = 0.4
     if period_mode == "sampled":
         init_values["P"] = 4.83
     elif period_mode == "fixed":
@@ -101,6 +109,13 @@ def run_fixed_two_column_mcmc(
     target_accept_prob=0.9,
     dense_mass=True,
     max_tree_depth=10,
+    sigma_b_scale=0.1,
+    fixed_ell_b=None,
+    fix_geometry=False,
+    fixed_cosi=0.485,
+    fixed_v=31.2,
+    fixed_q1=0.81,
+    fixed_q2=0.59,
     progress_bar=True,
 ):
     """Run fixed-atmosphere two-column Doppler retrieval."""
@@ -123,6 +138,13 @@ def run_fixed_two_column_mcmc(
             cloudy_profile,
             period_mode=period_mode,
             fixed_period=fixed_period,
+            sigma_b_scale=sigma_b_scale,
+            fixed_ell_b=fixed_ell_b,
+            fix_geometry=fix_geometry,
+            fixed_cosi=fixed_cosi,
+            fixed_v=fixed_v,
+            fixed_q1=fixed_q1,
+            fixed_q2=fixed_q2,
         )
 
     kernel = make_fixed_two_column_nuts_kernel(
@@ -130,6 +152,8 @@ def run_fixed_two_column_mcmc(
         n_phase=chip_data.flux.shape[0],
         period_mode=period_mode,
         fixed_period=fixed_period,
+        fixed_ell_b=fixed_ell_b,
+        fix_geometry=fix_geometry,
         target_accept_prob=target_accept_prob,
         dense_mass=dense_mass,
         max_tree_depth=max_tree_depth,
@@ -153,6 +177,9 @@ def save_fixed_two_column_samples(
     clear_profile,
     cloudy_profile,
     period_mode,
+    sigma_b_scale=None,
+    fixed_ell_b=None,
+    fix_geometry=False,
 ):
     """Save Milestone 2-1 samples and fixed profile metadata."""
 
@@ -168,6 +195,11 @@ def save_fixed_two_column_samples(
             "chip_index": np.asarray(chip_data.chip_index),
             "nside": np.asarray(geometry.nside),
             "period_mode": np.asarray(period_mode),
+            "sigma_b_scale": np.asarray(
+                np.nan if sigma_b_scale is None else sigma_b_scale
+            ),
+            "fixed_ell_b": np.asarray(np.nan if fixed_ell_b is None else fixed_ell_b),
+            "fix_geometry": np.asarray(fix_geometry),
         }
     )
     np.savez(output_path, **save_data)
@@ -291,7 +323,7 @@ def compute_contrast_map_moments(
 ):
     """Compute posterior moments for the cloud-fraction contrast map."""
 
-    sample_count = len(np.asarray(samples["v"]))
+    sample_count = len(np.asarray(samples["f_cloud"]))
     if sample_indices is None:
         sample_indices = np.arange(sample_count)
     else:
@@ -341,6 +373,9 @@ def fixed_two_column_median_sample(samples):
         "chip_index",
         "nside",
         "period_mode",
+        "sigma_b_scale",
+        "fixed_ell_b",
+        "fix_geometry",
     }
     for name, values in samples.items():
         array = np.asarray(values)

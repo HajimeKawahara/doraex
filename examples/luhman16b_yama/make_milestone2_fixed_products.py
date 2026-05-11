@@ -1,6 +1,7 @@
 """Create Milestone 2-1 fixed two-column diagnostic products."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -125,6 +126,25 @@ def _plot_cloud_fraction(mean_map, std_map, out_path):
     plt.close(fig)
 
 
+def _write_cloud_fraction_diagnostics(
+    path,
+    cloud_mean,
+    cloud_std,
+    contrast_mean,
+):
+    diagnostics = {
+        "cloud_fraction_mean_min": float(np.min(cloud_mean)),
+        "cloud_fraction_mean_max": float(np.max(cloud_mean)),
+        "cloud_fraction_std_min": float(np.min(cloud_std)),
+        "cloud_fraction_std_max": float(np.max(cloud_std)),
+        "fraction_pixels_below_zero": float(np.mean(cloud_mean < 0.0)),
+        "fraction_pixels_above_one": float(np.mean(cloud_mean > 1.0)),
+        "contrast_mean_min": float(np.min(contrast_mean)),
+        "contrast_mean_max": float(np.max(contrast_mean)),
+    }
+    path.write_text(json.dumps(diagnostics, indent=2) + "\n", encoding="utf-8")
+
+
 def _plot_delta_s(delta_s_mean, delta_s_std, out_path):
     _plot_two_panel_map(
         delta_s_mean,
@@ -215,6 +235,8 @@ def main():
     contrast_var = np.asarray(contrast_var)
     cloud_mean = np.asarray(cloud_mean)
     cloud_var = np.asarray(cloud_var)
+    cloud_std = np.sqrt(cloud_var)
+    clipped_cloud_mean = np.clip(cloud_mean, 0.0, 1.0)
 
     model, median_sample = reconstruct_fixed_two_column_timeseries(
         chip_data,
@@ -237,6 +259,10 @@ def main():
     np.save(out_dir / f"contrast_var_chip{args.chip_index}.npy", contrast_var)
     np.save(out_dir / f"cloud_fraction_mean_chip{args.chip_index}.npy", cloud_mean)
     np.save(out_dir / f"cloud_fraction_var_chip{args.chip_index}.npy", cloud_var)
+    np.save(
+        out_dir / f"cloud_fraction_clipped_mean_chip{args.chip_index}.npy",
+        clipped_cloud_mean,
+    )
     np.save(out_dir / f"delta_s_mean_chip{args.chip_index}.npy", delta_s_mean)
     np.save(out_dir / f"delta_s_var_chip{args.chip_index}.npy", delta_s_var)
     np.save(out_dir / f"model_spectrum_chip{args.chip_index}.npy", model)
@@ -248,8 +274,13 @@ def main():
 
     _plot_cloud_fraction(
         cloud_mean,
-        np.sqrt(cloud_var),
+        cloud_std,
         out_dir / f"figure8_cloud_fraction_chip{args.chip_index}.png",
+    )
+    _plot_cloud_fraction(
+        clipped_cloud_mean,
+        cloud_std,
+        out_dir / f"figure8_cloud_fraction_clipped_chip{args.chip_index}.png",
     )
     _plot_delta_s(
         delta_s_mean,
@@ -262,6 +293,12 @@ def main():
         model,
         sigma_d,
         out_dir / f"figure9_fixed_two_column_chip{args.chip_index}.png",
+    )
+    _write_cloud_fraction_diagnostics(
+        out_dir / f"cloud_fraction_diagnostics_chip{args.chip_index}.json",
+        cloud_mean,
+        cloud_std,
+        contrast_mean,
     )
     print(f"Products saved to {out_dir}")
 

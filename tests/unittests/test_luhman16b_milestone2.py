@@ -51,11 +51,16 @@ def test_fixed_two_column_model_trace_smoke():
         jnp.asarray(clear_profile),
         jnp.asarray(cloudy_profile),
         period_mode="fixed",
+        sigma_b_scale=0.1,
+        fixed_ell_b=0.4,
+        fix_geometry=True,
     )
 
     assert trace["obs"]["value"].shape == (chip.flux.size,)
     assert trace["f_cloud"]["value"].shape == ()
     assert trace["surface_scale"]["value"].shape == ()
+    assert trace["ell_b"]["value"].shape == ()
+    assert trace["cosi"]["value"].shape == ()
     assert trace["log_w"]["value"].shape == (chip.flux.shape[0],)
 
 
@@ -71,6 +76,9 @@ def test_fixed_two_column_mcmc_smoke():
         period_mode="fixed",
         dense_mass=False,
         max_tree_depth=3,
+        sigma_b_scale=0.1,
+        fixed_ell_b=0.4,
+        fix_geometry=True,
         progress_bar=False,
     )
     samples = mcmc.get_samples()

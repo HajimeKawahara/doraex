@@ -104,3 +104,27 @@ python examples/luhman16b_yama/run_milestone2_fixed_atmosphere.py \
   --num-samples 1000 \
   --out-dir results/milestone2_1
 ```
+
+If the fully free Milestone 2-1 run shows many divergences, use the stabilized
+diagnostic configuration before relaxing parameters again:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_fixed_atmosphere.py \
+  --nside 8 \
+  --chip-index 1 \
+  --profiles data/milestone2_fixed_profiles_chip1.npz \
+  --num-warmup 1500 \
+  --num-samples 1000 \
+  --target-accept-prob 0.98 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.4 \
+  --fix-geometry-to-milestone1 \
+  --out-dir results/milestone2_1_stabilized
+```
+
+The Milestone 2-1 product generator also writes
+`figure8_cloud_fraction_clipped_chip1.png` and
+`cloud_fraction_diagnostics_chip1.json` so cloud-fraction excursions outside
+the physical interval can be checked directly.

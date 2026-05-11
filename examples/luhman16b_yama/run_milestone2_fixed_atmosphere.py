@@ -42,6 +42,27 @@ def parse_args():
     parser.add_argument("--max-tree-depth", type=int, default=10)
     parser.add_argument("--period-mode", choices=("sampled", "fixed"), default="sampled")
     parser.add_argument("--fixed-period", type=float, default=5.0)
+    parser.add_argument(
+        "--sigma-b-scale",
+        type=float,
+        default=0.1,
+        help="Half-normal scale for cloud-fraction contrast variations.",
+    )
+    parser.add_argument(
+        "--fix-ell-b",
+        type=float,
+        default=None,
+        help="Fix the cloud-map correlation length in radians instead of sampling it.",
+    )
+    parser.add_argument(
+        "--fix-geometry-to-milestone1",
+        action="store_true",
+        help="Fix cosi, v, q1, and q2 to Milestone-1-like values.",
+    )
+    parser.add_argument("--fixed-cosi", type=float, default=0.485)
+    parser.add_argument("--fixed-v", type=float, default=31.2)
+    parser.add_argument("--fixed-q1", type=float, default=0.81)
+    parser.add_argument("--fixed-q2", type=float, default=0.59)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
@@ -94,6 +115,13 @@ def main():
         target_accept_prob=args.target_accept_prob,
         dense_mass=dense_mass,
         max_tree_depth=max_tree_depth,
+        sigma_b_scale=args.sigma_b_scale,
+        fixed_ell_b=args.fix_ell_b,
+        fix_geometry=args.fix_geometry_to_milestone1,
+        fixed_cosi=args.fixed_cosi,
+        fixed_v=args.fixed_v,
+        fixed_q1=args.fixed_q1,
+        fixed_q2=args.fixed_q2,
         progress_bar=True,
     )
     if args.print_summary and num_samples >= 4:
@@ -114,6 +142,9 @@ def main():
         clear_profile,
         cloudy_profile,
         period_mode=args.period_mode,
+        sigma_b_scale=args.sigma_b_scale,
+        fixed_ell_b=args.fix_ell_b,
+        fix_geometry=args.fix_geometry_to_milestone1,
     )
     print(f"Samples saved to {output_path}")
 
