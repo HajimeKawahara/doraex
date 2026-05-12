@@ -18,19 +18,27 @@ from doraex.workflows.luhman16b_milestone2 import (  # noqa: E402
     save_free_t0_cloud_two_column_samples,
 )
 
+DEFAULT_M23A_OUT = ROOT / "results" / "milestone2_3a"
+DEFAULT_M23B_OUT = ROOT / "results" / "milestone2_3b"
+
 
 def parse_args():
     """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
-        description="Run Milestone 2-3a with free T0 and cloud-top pressure."
+        description="Run Milestone 2-3 grid retrieval with free T0."
     )
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--profile-grid",
         default=str(ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip1.npz"),
     )
-    parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_3a"))
+    parser.add_argument("--out-dir", default=str(DEFAULT_M23A_OUT))
+    parser.add_argument(
+        "--m2-3b",
+        action="store_true",
+        help="Use Milestone 2-3b defaults with free ell_b.",
+    )
     parser.add_argument("--chip-index", type=int, default=1)
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--num-warmup", type=int, default=1500)
@@ -72,7 +80,18 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.m2_3b:
+        args.free_ell_b = True
+        if args.out_dir == str(DEFAULT_M23A_OUT):
+            args.out_dir = str(DEFAULT_M23B_OUT)
+        if args.target_accept_prob == 0.98:
+            args.target_accept_prob = 0.99
+        if args.max_tree_depth == 10:
+            args.max_tree_depth = 11
+        if args.num_warmup == 1500:
+            args.num_warmup = 2000
+    return args
 
 
 def main():
@@ -145,7 +164,8 @@ def main():
     elif args.print_summary:
         print("Skipping MCMC summary because num_samples < 4.")
 
-    suffix = "_smoke" if args.smoke_test else ""
+    milestone_suffix = "_free_ell" if args.m2_3b else ""
+    suffix = f"{milestone_suffix}_smoke" if args.smoke_test else milestone_suffix
     output_path = (
         Path(args.out_dir)
         / f"mcmc_chip{args.chip_index}_{args.period_mode}_free_t0_cloud{suffix}.npz"

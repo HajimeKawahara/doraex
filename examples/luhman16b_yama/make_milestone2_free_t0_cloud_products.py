@@ -29,28 +29,40 @@ from make_milestone2_free_cloud_products import (  # noqa: E402
     _safe_correlation,
 )
 
+DEFAULT_M23A_SAMPLES = (
+    ROOT / "results" / "milestone2_3a" / "mcmc_chip1_fixed_free_t0_cloud.npz"
+)
+DEFAULT_M23B_SAMPLES = (
+    ROOT
+    / "results"
+    / "milestone2_3b"
+    / "mcmc_chip1_fixed_free_t0_cloud_free_ell.npz"
+)
+DEFAULT_M23A_OUT = ROOT / "results" / "milestone2_3a"
+DEFAULT_M23B_OUT = ROOT / "results" / "milestone2_3b"
+
 
 def parse_args():
     """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
-        description="Build Milestone 2-3a maps and spectral residual diagnostics."
+        description="Build Milestone 2-3 maps and spectral residual diagnostics."
     )
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--samples",
-        default=str(
-            ROOT
-            / "results"
-            / "milestone2_3a"
-            / "mcmc_chip1_fixed_free_t0_cloud.npz"
-        ),
+        default=str(DEFAULT_M23A_SAMPLES),
     )
     parser.add_argument(
         "--profile-grid",
         default=str(ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip1.npz"),
     )
-    parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_3a"))
+    parser.add_argument("--out-dir", default=str(DEFAULT_M23A_OUT))
+    parser.add_argument(
+        "--m2-3b",
+        action="store_true",
+        help="Use Milestone 2-3b free-ell defaults.",
+    )
     parser.add_argument("--chip-index", type=int, default=1)
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument(
@@ -63,7 +75,13 @@ def parse_args():
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.m2_3b:
+        if args.samples == str(DEFAULT_M23A_SAMPLES):
+            args.samples = str(DEFAULT_M23B_SAMPLES)
+        if args.out_dir == str(DEFAULT_M23A_OUT):
+            args.out_dir = str(DEFAULT_M23B_OUT)
+    return args
 
 
 def _select_sample_indices(sample_count, max_map_samples):
@@ -116,6 +134,7 @@ def _write_free_t0_cloud_diagnostics(
 ):
     t0 = np.asarray(samples["T0"], dtype=float)
     log_p_cloud = np.asarray(samples["log_p_cloud"], dtype=float)
+    ell_b = np.asarray(samples["ell_b"], dtype=float)
     t0_bounds = np.asarray(
         samples.get("t0_bounds", np.asarray([np.min(t0_grid), np.max(t0_grid)])),
         dtype=float,
@@ -129,6 +148,9 @@ def _write_free_t0_cloud_diagnostics(
     )
     t0_edge = 0.05 * (float(t0_bounds[1]) - float(t0_bounds[0]))
     log_p_edge = 0.05 * (float(log_p_bounds[1]) - float(log_p_bounds[0]))
+    ell_b_lower = 0.1
+    ell_b_upper = 1.5
+    ell_b_edge = 0.05 * (ell_b_upper - ell_b_lower)
     diagnostics = {
         "t0_min": float(np.min(t0)),
         "t0_max": float(np.max(t0)),
@@ -152,6 +174,28 @@ def _write_free_t0_cloud_diagnostics(
         "fraction_log_p_cloud_near_upper_edge": float(
             np.mean(log_p_cloud >= log_p_bounds[1] - log_p_edge)
         ),
+        "ell_b_min": float(np.min(ell_b)),
+        "ell_b_max": float(np.max(ell_b)),
+        "ell_b_mean": float(np.mean(ell_b)),
+        "ell_b_median": float(np.median(ell_b)),
+        "ell_b_std": float(np.std(ell_b)),
+        "ell_b_q05": float(np.quantile(ell_b, 0.05)),
+        "ell_b_q16": float(np.quantile(ell_b, 0.16)),
+        "ell_b_q84": float(np.quantile(ell_b, 0.84)),
+        "ell_b_q95": float(np.quantile(ell_b, 0.95)),
+        "ell_b_mean_deg": float(np.degrees(np.mean(ell_b))),
+        "ell_b_median_deg": float(np.degrees(np.median(ell_b))),
+        "ell_b_prior_lower": ell_b_lower,
+        "ell_b_prior_upper": ell_b_upper,
+        "fraction_ell_b_near_lower_edge": float(
+            np.mean(ell_b <= ell_b_lower + ell_b_edge)
+        ),
+        "fraction_ell_b_near_upper_edge": float(
+            np.mean(ell_b >= ell_b_upper - ell_b_edge)
+        ),
+        "fraction_ell_b_lt_0p3": float(np.mean(ell_b < 0.3)),
+        "fraction_ell_b_lt_0p4": float(np.mean(ell_b < 0.4)),
+        "fraction_ell_b_gt_0p6": float(np.mean(ell_b > 0.6)),
         "cloud_fraction_mean_min": float(np.min(cloud_mean)),
         "cloud_fraction_mean_max": float(np.max(cloud_mean)),
         "cloud_fraction_std_min": float(np.min(cloud_std)),
@@ -165,15 +209,23 @@ def _write_free_t0_cloud_diagnostics(
             np.max(np.abs(clipped_cloud_mean - cloud_mean))
         ),
         "corr_t0_log_p_cloud": _safe_correlation(t0, log_p_cloud),
+        "corr_t0_ell_b": _safe_correlation(t0, ell_b),
         "corr_t0_f_cloud": _safe_correlation(t0, samples["f_cloud"]),
         "corr_t0_surface_scale": _safe_correlation(t0, samples["surface_scale"]),
         "corr_log_p_cloud_f_cloud": _safe_correlation(
             log_p_cloud,
             samples["f_cloud"],
         ),
+        "corr_log_p_cloud_ell_b": _safe_correlation(log_p_cloud, ell_b),
         "corr_log_p_cloud_sigma_b": _safe_correlation(
             log_p_cloud,
             samples["sigma_b"],
+        ),
+        "corr_ell_b_sigma_b": _safe_correlation(ell_b, samples["sigma_b"]),
+        "corr_ell_b_f_cloud": _safe_correlation(ell_b, samples["f_cloud"]),
+        "corr_ell_b_surface_scale": _safe_correlation(
+            ell_b,
+            samples["surface_scale"],
         ),
         "t0_grid_min": float(np.min(t0_grid)),
         "t0_grid_max": float(np.max(t0_grid)),

@@ -220,3 +220,32 @@ def test_free_t0_cloud_two_column_mcmc_smoke():
     assert samples["log_p_cloud"].shape == (2,)
     assert samples["f_cloud"].shape == (2,)
     assert np.isfinite(np.asarray(samples["T0"])).all()
+
+
+def test_free_t0_cloud_two_column_free_ell_mcmc_smoke():
+    chip, geometry, _, _ = _small_inputs()
+    t0_grid = np.linspace(1000.0, 1700.0, 5)
+    log_p_cloud_grid = np.linspace(-2.0, 2.0, 5)
+    clear_profile_grid, cloudy_profile_grid = synthetic_t0_cloud_profile_grid(
+        chip.wavelengths,
+        t0_grid,
+        log_p_cloud_grid,
+    )
+    mcmc = run_free_t0_cloud_two_column_mcmc(
+        chip,
+        geometry,
+        t0_grid,
+        log_p_cloud_grid,
+        clear_profile_grid,
+        cloudy_profile_grid,
+        num_warmup=2,
+        num_samples=2,
+        dense_mass=False,
+        max_tree_depth=3,
+        fixed_ell_b=None,
+        progress_bar=False,
+    )
+    samples = mcmc.get_samples()
+
+    assert samples["ell_b"].shape == (2,)
+    assert np.isfinite(np.asarray(samples["ell_b"])).all()

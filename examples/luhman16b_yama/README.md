@@ -298,3 +298,44 @@ python examples/luhman16b_yama/make_milestone2_free_t0_cloud_products.py \
 Inspect `free_t0_cloud_diagnostics_chip1.json` for `T0` boundary sticking,
 `T0`-`log10 Pc` correlation, cloud-fraction excursions outside `[0, 1]`, and
 correlations with `f_cloud`, `sigma_b`, and `surface_scale`.
+
+## Milestone 2-3b
+
+Milestone 2-3b uses the same T0/cloud spectral grid as Milestone 2-3a, but
+samples the cloud-map correlation length `ell_b` instead of fixing it to
+`0.4 rad`. This checks whether the fixed smoothness scale is suppressing
+smaller-scale cloud-fraction structure.
+
+Run the free-ell NUTS analysis:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_free_t0_cloud.py \
+  --m2-3b \
+  --nside 8 \
+  --chip-index 1 \
+  --num-samples 1000 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-geometry-to-milestone1
+```
+
+The `--m2-3b` preset sets `--free-ell-b`, moves outputs to
+`results/milestone2_3b`, and uses conservative NUTS defaults
+`--target-accept-prob 0.99`, `--max-tree-depth 11`, and
+`--num-warmup 2000`.
+
+Build maps, spectra, and free-ell diagnostics:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_free_t0_cloud_products.py \
+  --m2-3b \
+  --nside 8 \
+  --chip-index 1 \
+  --max-map-samples 1000
+```
+
+Inspect `free_t0_cloud_diagnostics_chip1.json` for `ell_b` quantiles, degree
+conversion, fractions with `ell_b < 0.3`, `ell_b < 0.4`, `ell_b > 0.6`, prior
+edge sticking, and correlations with `T0`, `log10 Pc`, `f_cloud`, `sigma_b`,
+and `surface_scale`.
