@@ -83,6 +83,60 @@ def synthetic_cloud_profile_grid(wavelengths, log_p_cloud_grid, line_center=None
     return clear_profile, np.asarray(profiles)
 
 
+def synthetic_t0_cloud_profile_grid(
+    wavelengths,
+    t0_grid,
+    log_p_cloud_grid,
+    line_center=None,
+):
+    """Build lightweight T0/cloud-profile grids for smoke tests.
+
+    Args:
+        wavelengths: One-dimensional wavelength grid.
+        t0_grid: Grid of power-law ``T0`` values.
+        log_p_cloud_grid: Grid of ``log10 Pc`` values.
+        line_center: Optional center of the synthetic absorption feature.
+
+    Returns:
+        A tuple ``(clear_profile_grid, cloudy_profile_grid)``. The clear grid
+        has shape ``(n_t0, n_wavelength)`` and the cloudy grid has shape
+        ``(n_t0, n_log_p_cloud, n_wavelength)``.
+    """
+
+    wavelengths = np.asarray(wavelengths)
+    t0_grid = np.asarray(t0_grid)
+    log_p_cloud_grid = np.asarray(log_p_cloud_grid)
+    center = float(np.mean(wavelengths) if line_center is None else line_center)
+    width = 0.12 * (float(np.max(wavelengths)) - float(np.min(wavelengths)))
+    if width <= 0.0:
+        width = 1.0
+    base_gaussian = np.exp(-0.5 * ((wavelengths - center) / width) ** 2)
+
+    t0_center = float(np.mean(t0_grid))
+    t0_scale = max(float(np.ptp(t0_grid)), 1.0)
+    clear_profiles = []
+    cloudy_profiles = []
+    for t0 in t0_grid:
+        t0_shift = (float(t0) - t0_center) / t0_scale
+        clear_depth = 0.10 * (1.0 + 0.25 * t0_shift)
+        clear_continuum = 1.0 + 0.025 * t0_shift
+        clear_profiles.append(clear_continuum - clear_depth * base_gaussian)
+        cloudy_for_t0 = []
+        for log_p_cloud in log_p_cloud_grid:
+            depth_scale = 0.75 + 0.25 * np.tanh(float(log_p_cloud) - 1.0)
+            width_scale = 1.15 + 0.15 * np.tanh(1.0 - float(log_p_cloud))
+            continuum = 0.96 - 0.015 * np.tanh(float(log_p_cloud) - 1.0)
+            continuum = continuum + 0.020 * t0_shift
+            gaussian = np.exp(
+                -0.5 * ((wavelengths - center) / (width_scale * width)) ** 2
+            )
+            cloudy_for_t0.append(
+                continuum - 0.16 * depth_scale * (1.0 + 0.20 * t0_shift) * gaussian
+            )
+        cloudy_profiles.append(cloudy_for_t0)
+    return np.asarray(clear_profiles), np.asarray(cloudy_profiles)
+
+
 def save_two_column_profiles(path, wavelengths, clear_profile, cloudy_profile, metadata=None):
     """Save fixed clear/cloudy profiles to an NPZ file."""
 
@@ -115,6 +169,32 @@ def save_cloud_profile_grid(
         "wavelengths": np.asarray(wavelengths),
         "clear_profile": np.asarray(clear_profile),
         "log_p_cloud_grid": np.asarray(log_p_cloud_grid),
+        "cloudy_profile_grid": np.asarray(cloudy_profile_grid),
+    }
+    if metadata:
+        for key, value in metadata.items():
+            payload[key] = np.asarray(value)
+    np.savez(path, **payload)
+
+
+def save_t0_cloud_profile_grid(
+    path,
+    wavelengths,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    metadata=None,
+):
+    """Save T0-dependent clear and cloudy profile grids to an NPZ file."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "wavelengths": np.asarray(wavelengths),
+        "t0_grid": np.asarray(t0_grid),
+        "log_p_cloud_grid": np.asarray(log_p_cloud_grid),
+        "clear_profile_grid": np.asarray(clear_profile_grid),
         "cloudy_profile_grid": np.asarray(cloudy_profile_grid),
     }
     if metadata:
@@ -166,6 +246,23 @@ def load_cloud_profile_grid(path, expected_wavelengths=None):
     return (
         profiles["clear_profile"],
         profiles["log_p_cloud_grid"],
+        profiles["cloudy_profile_grid"],
+    )
+
+
+def load_t0_cloud_profile_grid(path, expected_wavelengths=None):
+    """Load T0-dependent clear and cloudy profile grids from an NPZ file."""
+
+    profiles = np.load(path)
+    wavelengths = profiles["wavelengths"]
+    if expected_wavelengths is not None and not np.allclose(
+        wavelengths, np.asarray(expected_wavelengths)
+    ):
+        raise ValueError("Profile wavelength grid does not match the data wavelength grid.")
+    return (
+        profiles["t0_grid"],
+        profiles["log_p_cloud_grid"],
+        profiles["clear_profile_grid"],
         profiles["cloudy_profile_grid"],
     )
 

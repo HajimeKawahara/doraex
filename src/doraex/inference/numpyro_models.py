@@ -27,6 +27,39 @@ def _interpolate_profile_grid(parameter_grid, profile_grid, parameter):
     return (1.0 - fraction) * profile_grid[index] + fraction * profile_grid[index + 1]
 
 
+def _interpolate_profile_grid_2d(x_grid, y_grid, profile_grid, x, y):
+    """Bilinearly interpolate a precomputed two-parameter profile grid."""
+
+    x_grid = jnp.asarray(x_grid)
+    y_grid = jnp.asarray(y_grid)
+    profile_grid = jnp.asarray(profile_grid)
+    x = jnp.asarray(x)
+    y = jnp.asarray(y)
+
+    x_index = jnp.searchsorted(x_grid, x, side="right") - 1
+    y_index = jnp.searchsorted(y_grid, y, side="right") - 1
+    x_index = jnp.clip(x_index, 0, x_grid.shape[0] - 2)
+    y_index = jnp.clip(y_index, 0, y_grid.shape[0] - 2)
+
+    x_left = x_grid[x_index]
+    x_right = x_grid[x_index + 1]
+    y_left = y_grid[y_index]
+    y_right = y_grid[y_index + 1]
+    x_fraction = (x - x_left) / (x_right - x_left)
+    y_fraction = (y - y_left) / (y_right - y_left)
+
+    p00 = profile_grid[x_index, y_index]
+    p10 = profile_grid[x_index + 1, y_index]
+    p01 = profile_grid[x_index, y_index + 1]
+    p11 = profile_grid[x_index + 1, y_index + 1]
+    return (
+        (1.0 - x_fraction) * (1.0 - y_fraction) * p00
+        + x_fraction * (1.0 - y_fraction) * p10
+        + (1.0 - x_fraction) * y_fraction * p01
+        + x_fraction * y_fraction * p11
+    )
+
+
 def luhman16b_ureshino_model(
     data,
     theta,
@@ -361,6 +394,83 @@ def free_cloud_two_column_doppler_model(
     cloudy_profile = _interpolate_profile_grid(
         log_p_cloud_grid,
         cloudy_profile_grid,
+        log_p_cloud,
+    )
+    return fixed_two_column_doppler_model(
+        data,
+        theta,
+        phi,
+        distance_matrix,
+        obs_times,
+        wavelengths,
+        clear_profile,
+        cloudy_profile,
+        period_mode=period_mode,
+        fixed_period=fixed_period,
+        pixel_area=pixel_area,
+        log_w_scale=log_w_scale,
+        surface_scale_location=surface_scale_location,
+        surface_scale_scale=surface_scale_scale,
+        sigma_b_scale=sigma_b_scale,
+        fixed_ell_b=fixed_ell_b,
+        fix_geometry=fix_geometry,
+        fixed_cosi=fixed_cosi,
+        fixed_v=fixed_v,
+        fixed_q1=fixed_q1,
+        fixed_q2=fixed_q2,
+        gp_jitter=gp_jitter,
+        noise_jitter=noise_jitter,
+    )
+
+
+def free_t0_cloud_two_column_doppler_model(
+    data,
+    theta,
+    phi,
+    distance_matrix,
+    obs_times,
+    wavelengths,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    period_mode="fixed",
+    fixed_period=4.83,
+    t0_bounds=(1000.0, 1700.0),
+    log_p_cloud_bounds=(-2.0, 2.0),
+    pixel_area=1.0,
+    log_w_scale=0.1,
+    surface_scale_location=0.0077,
+    surface_scale_scale=0.3,
+    sigma_b_scale=0.1,
+    fixed_ell_b=0.4,
+    fix_geometry=True,
+    fixed_cosi=0.485,
+    fixed_v=31.2,
+    fixed_q1=0.81,
+    fixed_q2=0.59,
+    gp_jitter=0.5e-6,
+    noise_jitter=1.0e-6,
+):
+    """Two-column Doppler retrieval with free T0 and cloud-top pressure.
+
+    This is the first grid-based simple-retrieval extension beyond Milestone
+    2-2. The ExoJAX spectra are precomputed on ``T0`` and ``log10 Pc`` grids.
+    NUTS samples ``T0`` and ``log10 Pc`` and interpolates the local clear and
+    cloudy spectra inside the JAX graph.
+    """
+
+    t0 = numpyro.sample("T0", dist.Uniform(t0_bounds[0], t0_bounds[1]))
+    log_p_cloud = numpyro.sample(
+        "log_p_cloud",
+        dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]),
+    )
+    clear_profile = _interpolate_profile_grid(t0_grid, clear_profile_grid, t0)
+    cloudy_profile = _interpolate_profile_grid_2d(
+        t0_grid,
+        log_p_cloud_grid,
+        cloudy_profile_grid,
+        t0,
         log_p_cloud,
     )
     return fixed_two_column_doppler_model(

@@ -246,3 +246,55 @@ Inspect `free_cloud_diagnostics_chip1.json` for boundary sticking in
 `log10 Pc`, cloud-fraction excursions outside `[0, 1]`, clipping shifts, and
 posterior correlations among `log10 Pc`, `f_cloud`, `sigma_b`, and
 `surface_scale`.
+
+## Milestone 2-3a
+
+Milestone 2-3a keeps the Milestone 2-2b stabilized geometry, period,
+cloud-map correlation length, cloud width, cloud optical depth, `alpha`, `logg`,
+and molecular abundances fixed, but samples the power-law temperature parameter
+`T0`. Clear spectra are precomputed on a `T0` grid and cloudy spectra are
+precomputed on a `(T0, log10 Pc)` grid.
+
+Generate the T0/cloud grid:
+
+```bash
+python examples/luhman16b_yama/generate_milestone2_t0_cloud_grid_profiles.py \
+  --chip-index 1 \
+  --opacity-cache-dir data/opacities/luhman16b_powerlaw \
+  --database-dir ~/data_mol/.database \
+  --t0-min 1000 \
+  --t0-max 1700 \
+  --t0-count 15 \
+  --log-p-cloud-min -2.0 \
+  --log-p-cloud-max 2.0 \
+  --log-p-cloud-count 33
+```
+
+Run the free-T0 NUTS analysis:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_free_t0_cloud.py \
+  --nside 8 \
+  --chip-index 1 \
+  --num-warmup 1500 \
+  --num-samples 1000 \
+  --target-accept-prob 0.98 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.4 \
+  --fix-geometry-to-milestone1
+```
+
+Build maps, spectra, and T0/cloud diagnostics:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_free_t0_cloud_products.py \
+  --nside 8 \
+  --chip-index 1 \
+  --max-map-samples 1000
+```
+
+Inspect `free_t0_cloud_diagnostics_chip1.json` for `T0` boundary sticking,
+`T0`-`log10 Pc` correlation, cloud-fraction excursions outside `[0, 1]`, and
+correlations with `f_cloud`, `sigma_b`, and `surface_scale`.
