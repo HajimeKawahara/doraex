@@ -21,6 +21,7 @@ from doraex.spectra.exojax_forward import (  # noqa: E402
     save_two_column_profiles,
     synthetic_two_column_profiles,
 )
+from chip_paths import fixed_profile_path  # noqa: E402
 
 
 def parse_args():
@@ -31,7 +32,11 @@ def parse_args():
         description="Generate fixed power-law clear/cloudy profiles for Milestone 2-1."
     )
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
-    parser.add_argument("--out", default=str(ROOT / "data" / "milestone2_fixed_profiles_chip1.npz"))
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output NPZ path. Defaults to data/milestone2_fixed_profiles_chip{N}.npz.",
+    )
     parser.add_argument("--chip-index", type=int, default=1)
     parser.add_argument("--opacity-cache-dir", default=str(ROOT / "data" / "opacities" / "luhman16b_powerlaw"))
     parser.add_argument("--database-dir", default=str(default_database))
@@ -40,7 +45,10 @@ def parse_args():
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.out is None:
+        args.out = str(fixed_profile_path(args.chip_index))
+    return args
 
 
 def _molecule_paths(database_dir):

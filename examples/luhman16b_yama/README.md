@@ -391,3 +391,62 @@ produce sharper maps without degrading Figure 9 residuals. If low `ell_b`
 significantly increases residual RMS, the smooth map is data-driven. If the
 residuals are nearly unchanged, the displayed map resolution is prior-choice
 sensitive.
+
+## Chip 0-3 runs
+
+The Luhman 16B data loader supports all four CRIRES chips with
+`--chip-index 0`, `1`, `2`, or `3`. Milestone 2 profile grids are wavelength
+dependent, so each chip needs its own ExoJAX grid. If `--out`,
+`--profile-grid`, or `--samples` is omitted, the scripts now choose chip-aware
+defaults such as `data/milestone2_t0_cloud_grid_profiles_chip2.npz` and
+`mcmc_chip2_fixed_free_t0_cloud.npz`.
+
+Generate the Milestone 2-3 T0/cloud grids for all chips:
+
+```bash
+for chip in 0 1 2 3; do
+  python examples/luhman16b_yama/generate_milestone2_t0_cloud_grid_profiles.py \
+    --chip-index ${chip} \
+    --opacity-cache-dir data/opacities/luhman16b_powerlaw \
+    --database-dir ~/data_mol/.database \
+    --t0-min 1000 \
+    --t0-max 1700 \
+    --t0-count 15 \
+    --log-p-cloud-min -2.0 \
+    --log-p-cloud-max 2.0 \
+    --log-p-cloud-count 33
+done
+```
+
+Run the fiducial fixed-`ell_b=0.3` retrieval for all chips:
+
+```bash
+for chip in 0 1 2 3; do
+  python examples/luhman16b_yama/run_milestone2_free_t0_cloud.py \
+    --nside 8 \
+    --chip-index ${chip} \
+    --num-warmup 2000 \
+    --num-samples 1500 \
+    --target-accept-prob 0.98 \
+    --max-tree-depth 11 \
+    --period-mode fixed \
+    --fixed-period 4.83 \
+    --sigma-b-scale 0.1 \
+    --fix-ell-b 0.3 \
+    --fix-geometry-to-milestone1 \
+    --out-dir results/milestone2_3d_chip${chip}
+done
+```
+
+Build products with the same chip-aware defaults:
+
+```bash
+for chip in 0 1 2 3; do
+  python examples/luhman16b_yama/make_milestone2_free_t0_cloud_products.py \
+    --nside 8 \
+    --chip-index ${chip} \
+    --samples results/milestone2_3d_chip${chip}/mcmc_chip${chip}_fixed_free_t0_cloud.npz \
+    --out-dir results/milestone2_3d_chip${chip} \
+    --max-map-samples 1000
+done
+```

@@ -22,9 +22,7 @@ from doraex.spectra.exojax_forward import (  # noqa: E402
     save_cloud_profile_grid,
     synthetic_cloud_profile_grid,
 )
-
-DEFAULT_M22A_OUT = ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"
-DEFAULT_M22B_OUT = ROOT / "data" / "milestone2_cloud_grid_profiles_wide_chip1.npz"
+from chip_paths import cloud_grid_path  # noqa: E402
 
 
 def parse_args():
@@ -37,7 +35,8 @@ def parse_args():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--out",
-        default=str(DEFAULT_M22A_OUT),
+        default=None,
+        help="Output NPZ path. Defaults to a chip-aware Milestone 2-2 grid path.",
     )
     parser.add_argument(
         "--m2-2b",
@@ -60,14 +59,14 @@ def parse_args():
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.m2_2b:
-        if args.out == str(DEFAULT_M22A_OUT):
-            args.out = str(DEFAULT_M22B_OUT)
         if args.log_p_cloud_min == 0.0:
             args.log_p_cloud_min = -2.0
         if args.log_p_cloud_max == 2.0:
             args.log_p_cloud_max = 2.0
         if args.log_p_cloud_count == 17:
             args.log_p_cloud_count = 33
+    if args.out is None:
+        args.out = str(cloud_grid_path(args.chip_index, wide=args.m2_2b))
     return args
 
 

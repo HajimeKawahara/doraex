@@ -25,15 +25,8 @@ from make_milestone2_fixed_products import (  # noqa: E402
     _plot_figure9,
     _write_cloud_fraction_diagnostics,
 )
+from chip_paths import cloud_grid_path, free_cloud_sample_path  # noqa: E402
 
-DEFAULT_M22A_SAMPLES = (
-    ROOT / "results" / "milestone2_2a" / "mcmc_chip1_fixed_free_cloud.npz"
-)
-DEFAULT_M22B_SAMPLES = (
-    ROOT / "results" / "milestone2_2b" / "mcmc_chip1_fixed_free_cloud_wide.npz"
-)
-DEFAULT_M22A_GRID = ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"
-DEFAULT_M22B_GRID = ROOT / "data" / "milestone2_cloud_grid_profiles_wide_chip1.npz"
 DEFAULT_M22A_OUT = ROOT / "results" / "milestone2_2a"
 DEFAULT_M22B_OUT = ROOT / "results" / "milestone2_2b"
 
@@ -47,11 +40,11 @@ def parse_args():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--samples",
-        default=str(DEFAULT_M22A_SAMPLES),
+        default=None,
     )
     parser.add_argument(
         "--profile-grid",
-        default=str(DEFAULT_M22A_GRID),
+        default=None,
     )
     parser.add_argument("--out-dir", default=str(DEFAULT_M22A_OUT))
     parser.add_argument(
@@ -73,12 +66,19 @@ def parse_args():
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.m2_2b:
-        if args.samples == str(DEFAULT_M22A_SAMPLES):
-            args.samples = str(DEFAULT_M22B_SAMPLES)
-        if args.profile_grid == str(DEFAULT_M22A_GRID):
-            args.profile_grid = str(DEFAULT_M22B_GRID)
         if args.out_dir == str(DEFAULT_M22A_OUT):
             args.out_dir = str(DEFAULT_M22B_OUT)
+    if args.samples is None:
+        args.samples = str(
+            free_cloud_sample_path(
+                args.out_dir,
+                args.chip_index,
+                "fixed",
+                wide=args.m2_2b,
+            )
+        )
+    if args.profile_grid is None:
+        args.profile_grid = str(cloud_grid_path(args.chip_index, wide=args.m2_2b))
     return args
 
 

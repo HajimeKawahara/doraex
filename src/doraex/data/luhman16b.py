@@ -75,6 +75,12 @@ def load_luhman16b_chip(
     with spectra_path.open("rb") as file_obj:
         crires = pickle.load(file_obj, encoding="latin1")
 
+    chip_count = np.asarray(crires["wobs"]).shape[0]
+    if not 0 <= chip_index < chip_count:
+        raise ValueError(
+            f"chip_index must be in [0, {chip_count - 1}], got {chip_index}."
+        )
+
     observed_di = crires["obs1"] / crires["chipcors"]
     chip_wavelengths = crires["wobs"][chip_index] * 1.0e4
     sort_index = np.argsort(chip_wavelengths)

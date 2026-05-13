@@ -17,6 +17,7 @@ from doraex.workflows.luhman16b_milestone2 import (  # noqa: E402
     run_fixed_two_column_mcmc,
     save_fixed_two_column_samples,
 )
+from chip_paths import fixed_profile_path  # noqa: E402
 
 
 def parse_args():
@@ -28,7 +29,7 @@ def parse_args():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--profiles",
-        default=str(ROOT / "data" / "milestone2_fixed_profiles_chip1.npz"),
+        default=None,
         help="NPZ file with fixed clear_profile and cloudy_profile.",
     )
     parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_1"))
@@ -72,7 +73,10 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.profiles is None:
+        args.profiles = str(fixed_profile_path(args.chip_index))
+    return args
 
 
 def main():

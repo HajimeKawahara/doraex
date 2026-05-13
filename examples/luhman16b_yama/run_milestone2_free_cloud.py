@@ -18,9 +18,8 @@ from doraex.workflows.luhman16b_milestone2 import (  # noqa: E402
     run_free_cloud_two_column_mcmc,
     save_free_cloud_two_column_samples,
 )
+from chip_paths import cloud_grid_path  # noqa: E402
 
-DEFAULT_M22A_GRID = ROOT / "data" / "milestone2_cloud_grid_profiles_chip1.npz"
-DEFAULT_M22B_GRID = ROOT / "data" / "milestone2_cloud_grid_profiles_wide_chip1.npz"
 DEFAULT_M22A_OUT = ROOT / "results" / "milestone2_2a"
 DEFAULT_M22B_OUT = ROOT / "results" / "milestone2_2b"
 
@@ -34,7 +33,7 @@ def parse_args():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--profile-grid",
-        default=str(DEFAULT_M22A_GRID),
+        default=None,
         help="NPZ file with clear_profile and cloudy_profile_grid.",
     )
     parser.add_argument("--out-dir", default=str(DEFAULT_M22A_OUT))
@@ -83,14 +82,14 @@ def parse_args():
     )
     args = parser.parse_args()
     if args.m2_2b:
-        if args.profile_grid == str(DEFAULT_M22A_GRID):
-            args.profile_grid = str(DEFAULT_M22B_GRID)
         if args.out_dir == str(DEFAULT_M22A_OUT):
             args.out_dir = str(DEFAULT_M22B_OUT)
         if args.log_p_cloud_min == 0.0:
             args.log_p_cloud_min = -2.0
         if args.log_p_cloud_max == 2.0:
             args.log_p_cloud_max = 2.0
+    if args.profile_grid is None:
+        args.profile_grid = str(cloud_grid_path(args.chip_index, wide=args.m2_2b))
     return args
 
 

@@ -22,6 +22,7 @@ from doraex.spectra.exojax_forward import (  # noqa: E402
     save_t0_cloud_profile_grid,
     synthetic_t0_cloud_profile_grid,
 )
+from chip_paths import t0_cloud_grid_path  # noqa: E402
 
 
 def parse_args():
@@ -34,7 +35,8 @@ def parse_args():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--out",
-        default=str(ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip1.npz"),
+        default=None,
+        help="Output NPZ path. Defaults to data/milestone2_t0_cloud_grid_profiles_chip{N}.npz.",
     )
     parser.add_argument("--chip-index", type=int, default=1)
     parser.add_argument(
@@ -53,7 +55,10 @@ def parse_args():
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.out is None:
+        args.out = str(t0_cloud_grid_path(args.chip_index))
+    return args
 
 
 def _molecule_paths(database_dir):

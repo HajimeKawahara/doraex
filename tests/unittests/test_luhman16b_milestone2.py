@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+import sys
 
 import jax
 import jax.numpy as jnp
@@ -42,7 +43,18 @@ def _load_fixed_ell_sensitivity_script():
         / "luhman16b_yama"
         / "run_milestone2_fixed_ell_sensitivity.py"
     )
+    script_dir = str(script_path.parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
     spec = importlib.util.spec_from_file_location("fixed_ell_sensitivity", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_chip_paths_script():
+    script_path = ROOT / "examples" / "luhman16b_yama" / "chip_paths.py"
+    spec = importlib.util.spec_from_file_location("chip_paths", script_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -273,3 +285,22 @@ def test_fixed_ell_sensitivity_helpers():
     assert values == [0.25, 0.30, 0.4]
     assert module.ell_tag(0.25) == "ell0p250"
     assert module.ell_tag(0.4) == "ell0p400"
+
+
+def test_chip_aware_milestone2_default_paths():
+    module = _load_chip_paths_script()
+
+    assert module.fixed_profile_path(0).name == "milestone2_fixed_profiles_chip0.npz"
+    assert module.cloud_grid_path(2).name == "milestone2_cloud_grid_profiles_chip2.npz"
+    assert (
+        module.cloud_grid_path(3, wide=True).name
+        == "milestone2_cloud_grid_profiles_wide_chip3.npz"
+    )
+    assert (
+        module.t0_cloud_grid_path(1).name
+        == "milestone2_t0_cloud_grid_profiles_chip1.npz"
+    )
+    assert (
+        module.free_t0_cloud_sample_path("results/m2", 2, "fixed").name
+        == "mcmc_chip2_fixed_free_t0_cloud.npz"
+    )

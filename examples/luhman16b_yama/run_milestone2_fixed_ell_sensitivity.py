@@ -17,6 +17,7 @@ from doraex.workflows.luhman16b_milestone2 import (  # noqa: E402
     run_free_t0_cloud_two_column_mcmc,
     save_free_t0_cloud_two_column_samples,
 )
+from chip_paths import t0_cloud_grid_path  # noqa: E402
 
 
 def parse_ell_values(text):
@@ -43,7 +44,8 @@ def parse_args():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument(
         "--profile-grid",
-        default=str(ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip1.npz"),
+        default=None,
+        help="NPZ file with T0/cloud profile grids. Defaults to a chip-aware path.",
     )
     parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_3c"))
     parser.add_argument(
@@ -87,7 +89,10 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.profile_grid is None:
+        args.profile_grid = str(t0_cloud_grid_path(args.chip_index))
+    return args
 
 
 def main():

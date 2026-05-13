@@ -39,6 +39,23 @@ def test_luhman16b_chip_loader_shapes():
     assert np.all(np.diff(chip.wavelengths) > 0.0)
 
 
+def test_luhman16b_loader_has_all_four_chips():
+    for chip_index in range(4):
+        chip = load_luhman16b_chip(DATA_DIR, chip_index=chip_index)
+
+        assert chip.flux.shape == (14, 1024)
+        assert chip.wavelengths.shape == (1024,)
+        assert chip.line_profile.shape == (1024,)
+        assert chip.obs_times.shape == (14,)
+        assert np.isfinite(chip.flux).all()
+        assert np.all(np.diff(chip.wavelengths) > 0.0)
+
+
+def test_luhman16b_loader_rejects_invalid_chip_index():
+    with pytest.raises(ValueError, match="chip_index must be in"):
+        load_luhman16b_chip(DATA_DIR, chip_index=4)
+
+
 def test_luhman16b_numpyro_model_trace_smoke():
     chip = subset_chip_data(
         load_luhman16b_chip(DATA_DIR, chip_index=1),
