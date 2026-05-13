@@ -92,10 +92,18 @@ def _plot_pixel_fallback(
     plt.close(fig)
 
 
+def _ensure_numpy_in1d_compat():
+    """Provide a local compatibility alias for Astropy with NumPy >= 2.4."""
+
+    if not hasattr(np, "in1d"):
+        np.in1d = np.isin
+
+
 def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, bottom_unit, out_path):
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
     import matplotlib.pyplot as plt
     try:
+        _ensure_numpy_in1d_compat()
         import healpy as hp
     except Exception as exc:
         print(f"healpy map plotting unavailable; using pixel fallback: {exc}")
