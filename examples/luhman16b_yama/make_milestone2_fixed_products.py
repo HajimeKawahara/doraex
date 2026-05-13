@@ -64,10 +64,51 @@ def _select_sample_indices(sample_count, max_map_samples):
     return np.linspace(0, sample_count - 1, max_map_samples, dtype=int)
 
 
+def _plot_pixel_fallback(
+    top_map,
+    bottom_map,
+    top_title,
+    bottom_title,
+    top_unit,
+    bottom_unit,
+    out_path,
+):
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    import matplotlib.pyplot as plt
+
+    top_map = np.asarray(top_map)
+    bottom_map = np.asarray(bottom_map)
+    pixel_index = np.arange(top_map.size)
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    axes[0].plot(pixel_index, top_map, color="tab:blue", linewidth=0.8)
+    axes[0].set_ylabel(top_unit)
+    axes[0].set_title(f"{top_title} (pixel-order fallback)")
+    axes[1].plot(pixel_index, bottom_map, color="tab:orange", linewidth=0.8)
+    axes[1].set_xlabel("HEALPix pixel index")
+    axes[1].set_ylabel(bottom_unit)
+    axes[1].set_title(bottom_title)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, bottom_unit, out_path):
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
-    import healpy as hp
     import matplotlib.pyplot as plt
+    try:
+        import healpy as hp
+    except Exception as exc:
+        print(f"healpy map plotting unavailable; using pixel fallback: {exc}")
+        _plot_pixel_fallback(
+            top_map,
+            bottom_map,
+            top_title,
+            bottom_title,
+            top_unit,
+            bottom_unit,
+            out_path,
+        )
+        return
 
     fig = plt.figure(figsize=(9, 6))
     hp.mollview(
@@ -95,35 +136,15 @@ def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, 
 
 
 def _plot_cloud_fraction(mean_map, std_map, out_path):
-    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
-    import healpy as hp
-    import matplotlib.pyplot as plt
-
-    fig = plt.figure(figsize=(9, 6))
-    hp.mollview(
+    _plot_two_panel_map(
         mean_map,
-        fig=fig.number,
-        sub=(2, 1, 1),
-        cmap="viridis",
-        min=0.0,
-        max=1.0,
-        title="Posterior mean cloud fraction",
-        unit="f_cloud + b",
-        flip="geo",
-    )
-    hp.graticule()
-    hp.mollview(
         std_map,
-        fig=fig.number,
-        sub=(2, 1, 2),
-        cmap="magma",
-        title="Posterior std. dev. of cloud fraction",
-        unit="std",
-        flip="geo",
+        "Posterior mean cloud fraction",
+        "Posterior std. dev. of cloud fraction",
+        "f_cloud + b",
+        "std",
+        out_path,
     )
-    hp.graticule()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _write_cloud_fraction_diagnostics(
