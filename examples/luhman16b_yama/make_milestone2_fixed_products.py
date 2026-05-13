@@ -1,6 +1,7 @@
 """Create Milestone 2-1 fixed two-column diagnostic products."""
 
 import argparse
+import importlib
 import json
 import os
 from pathlib import Path
@@ -92,18 +93,34 @@ def _plot_pixel_fallback(
     plt.close(fig)
 
 
-def _ensure_numpy_in1d_compat():
-    """Provide a local compatibility alias for Astropy with NumPy >= 2.4."""
+def _check_interpolation_as_method(method, interpolation, fname):
+    """Compatibility helper removed from newer NumPy private APIs."""
+
+    if interpolation is None:
+        return method
+    if method != "linear":
+        raise TypeError(
+            f"{fname} received both method={method!r} and interpolation="
+            f"{interpolation!r}."
+        )
+    return interpolation
+
+
+def _ensure_numpy_astropy_compat():
+    """Provide local compatibility aliases for Astropy with newer NumPy."""
 
     if not hasattr(np, "in1d"):
         np.in1d = np.isin
+    function_base = importlib.import_module("numpy.lib._function_base_impl")
+    if not hasattr(function_base, "_check_interpolation_as_method"):
+        function_base._check_interpolation_as_method = _check_interpolation_as_method
 
 
 def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, bottom_unit, out_path):
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
     import matplotlib.pyplot as plt
     try:
-        _ensure_numpy_in1d_compat()
+        _ensure_numpy_astropy_compat()
         import healpy as hp
     except Exception as exc:
         print(f"healpy map plotting unavailable; using pixel fallback: {exc}")
