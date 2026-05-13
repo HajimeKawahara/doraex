@@ -1,22 +1,16 @@
 """Milestone 2 workflow helpers for fixed two-column Doppler retrieval."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from numpyro.infer import MCMC, NUTS, init_to_value
 
 from doraex.data.luhman16b import load_luhman16b_chip, subset_chip_data
+from doraex.geometry.healpix import angular_distance_matrix, healpix_pixel_angles
 from doraex.geometry.limb_darkening import kipping_q_to_u
 from doraex.inference.map_posterior import conditional_map_posterior
-from doraex.inference.numpyro_models import (
-    fixed_two_column_doppler_model,
-    free_t0_cloud_two_column_doppler_model,
-    free_cloud_two_column_doppler_model,
-    _interpolate_profile_grid,
-    _interpolate_profile_grid_2d,
-)
 from doraex.operators.design_matrix import two_column_operator_from_times
 from doraex.priors.spherical_gp import add_diagonal_jitter, squared_exponential_covariance
 from doraex.spectra.exojax_forward import (
@@ -30,7 +24,68 @@ from doraex.spectra.exojax_forward import (
     synthetic_t0_cloud_profile_grid,
     synthetic_two_column_profiles,
 )
-from doraex.workflows.luhman16b_milestone1 import build_luhman16b_geometry
+
+
+@dataclass(frozen=True)
+class Luhman16BGeometry:
+    """HEALPix geometry needed by the Luhman 16B workflows."""
+
+    theta: jnp.ndarray
+    phi: jnp.ndarray
+    distance_matrix: jnp.ndarray
+    nside: int
+
+
+def build_luhman16b_geometry(nside=8, order="ring"):
+    """Build pixel angles and angular-distance matrix for a HEALPix grid."""
+
+    theta, phi = healpix_pixel_angles(nside, order=order)
+    return Luhman16BGeometry(
+        theta=theta,
+        phi=phi,
+        distance_matrix=angular_distance_matrix(theta, phi),
+        nside=nside,
+    )
+
+
+def _interpolate_profile_grid(parameter_grid, profile_grid, parameter):
+    """Linearly interpolate a precomputed one-parameter profile grid."""
+
+    parameter_grid = jnp.asarray(parameter_grid)
+    profile_grid = jnp.asarray(profile_grid)
+    parameter = jnp.asarray(parameter)
+    index = jnp.searchsorted(parameter_grid, parameter, side="right") - 1
+    index = jnp.clip(index, 0, parameter_grid.shape[0] - 2)
+    left = parameter_grid[index]
+    right = parameter_grid[index + 1]
+    fraction = (parameter - left) / (right - left)
+    return (1.0 - fraction) * profile_grid[index] + fraction * profile_grid[index + 1]
+
+
+def _interpolate_profile_grid_2d(x_grid, y_grid, profile_grid, x, y):
+    """Bilinearly interpolate a precomputed two-parameter profile grid."""
+
+    x_grid = jnp.asarray(x_grid)
+    y_grid = jnp.asarray(y_grid)
+    profile_grid = jnp.asarray(profile_grid)
+    x = jnp.asarray(x)
+    y = jnp.asarray(y)
+    x_index = jnp.searchsorted(x_grid, x, side="right") - 1
+    y_index = jnp.searchsorted(y_grid, y, side="right") - 1
+    x_index = jnp.clip(x_index, 0, x_grid.shape[0] - 2)
+    y_index = jnp.clip(y_index, 0, y_grid.shape[0] - 2)
+    x_fraction = (x - x_grid[x_index]) / (x_grid[x_index + 1] - x_grid[x_index])
+    y_fraction = (y - y_grid[y_index]) / (y_grid[y_index + 1] - y_grid[y_index])
+    p00 = profile_grid[x_index, y_index]
+    p10 = profile_grid[x_index + 1, y_index]
+    p01 = profile_grid[x_index, y_index + 1]
+    p11 = profile_grid[x_index + 1, y_index + 1]
+    return (
+        (1.0 - x_fraction) * (1.0 - y_fraction) * p00
+        + x_fraction * (1.0 - y_fraction) * p10
+        + (1.0 - x_fraction) * y_fraction * p01
+        + x_fraction * y_fraction * p11
+    )
 
 
 def load_milestone2_fixed_inputs(
@@ -171,6 +226,8 @@ def make_fixed_two_column_nuts_kernel(
 ):
     """Create the NUTS kernel for Milestone 2."""
 
+    from numpyro.infer import NUTS, init_to_value
+
     init_values = {
         "log_w": jnp.zeros(n_phase),
         "f_cloud": 0.5,
@@ -230,6 +287,9 @@ def run_fixed_two_column_mcmc(
     progress_bar=True,
 ):
     """Run fixed-atmosphere two-column Doppler retrieval."""
+
+    from numpyro.infer import MCMC
+    from doraex.inference.numpyro_models import fixed_two_column_doppler_model
 
     data = jnp.asarray(chip_data.flux)
     obs_times = jnp.asarray(chip_data.obs_times)
@@ -307,6 +367,9 @@ def run_free_cloud_two_column_mcmc(
     progress_bar=True,
 ):
     """Run Milestone 2-2 with free cloud-top pressure."""
+
+    from numpyro.infer import MCMC
+    from doraex.inference.numpyro_models import free_cloud_two_column_doppler_model
 
     data = jnp.asarray(chip_data.flux)
     obs_times = jnp.asarray(chip_data.obs_times)
@@ -399,6 +462,9 @@ def run_free_t0_cloud_two_column_mcmc(
     progress_bar=True,
 ):
     """Run grid-based Milestone 2-3a with free T0 and cloud-top pressure."""
+
+    from numpyro.infer import MCMC
+    from doraex.inference.numpyro_models import free_t0_cloud_two_column_doppler_model
 
     data = jnp.asarray(chip_data.flux)
     obs_times = jnp.asarray(chip_data.obs_times)
