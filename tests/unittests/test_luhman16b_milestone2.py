@@ -1,5 +1,6 @@
 """Smoke tests for Milestone 2-1 fixed two-column retrieval."""
 
+import argparse
 import importlib.util
 from pathlib import Path
 import sys
@@ -55,6 +56,19 @@ def _load_fixed_ell_sensitivity_script():
 def _load_chip_paths_script():
     script_path = ROOT / "examples" / "luhman16b_yama" / "chip_paths.py"
     spec = importlib.util.spec_from_file_location("chip_paths", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_chip_comparison_script():
+    script_path = (
+        ROOT
+        / "examples"
+        / "luhman16b_yama"
+        / "summarize_milestone2_chip_comparison.py"
+    )
+    spec = importlib.util.spec_from_file_location("chip_comparison", script_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -304,3 +318,60 @@ def test_chip_aware_milestone2_default_paths():
         module.free_t0_cloud_sample_path("results/m2", 2, "fixed").name
         == "mcmc_chip2_fixed_free_t0_cloud.npz"
     )
+
+
+def test_chip_comparison_summary_helpers(tmp_path):
+    module = _load_chip_comparison_script()
+
+    assert module.parse_chips("0, 1,3") == [0, 1, 3]
+    for chip in (0, 1):
+        out_dir = tmp_path / f"milestone2_3d_chip{chip}"
+        out_dir.mkdir()
+        np.savez(
+            out_dir / f"mcmc_chip{chip}_fixed_free_t0_cloud.npz",
+            T0=np.array([1200.0 + chip, 1210.0 + chip]),
+            log_p_cloud=np.array([1.2, 1.3]),
+            f_cloud=np.array([0.5, 0.6]),
+            sigma_b=np.array([0.1, 0.2]),
+            sigma_d=np.array([0.03, 0.04]),
+            surface_scale=np.array([0.006, 0.007]),
+            ell_b=np.array([0.3, 0.3]),
+            fixed_ell_b=np.array(0.3),
+            sigma_b_scale=np.array(0.1),
+            nside=np.array(1),
+            wavelengths=np.array([1.0, 2.0]),
+            obs_times=np.array([0.0, 1.0]),
+        )
+        np.save(out_dir / f"residual_chip{chip}.npy", np.array([[0.0, 1.0]]))
+        np.save(
+            out_dir / f"cloud_fraction_mean_chip{chip}.npy",
+            np.array([0.1, 0.2, 0.3]) + chip,
+        )
+        np.save(
+            out_dir / f"delta_s_mean_chip{chip}.npy",
+            np.array([0.3, 0.2, 0.1]) + chip,
+        )
+
+    args = argparse.Namespace(
+        chips=[0, 1],
+        results_template=str(tmp_path / "milestone2_3d_chip{chip}"),
+        samples_template=None,
+    )
+    entries = []
+    cloud_maps = {}
+    delta_s_maps = {}
+    for chip in args.chips:
+        entry, cloud_mean, delta_s_mean = module._entry_for_chip(args, chip)
+        entries.append(entry)
+        cloud_maps[chip] = cloud_mean
+        delta_s_maps[chip] = delta_s_mean
+
+    pairs = module._pairwise_map_metrics(entries, cloud_maps, delta_s_maps)
+
+    assert entries[0]["sample_available"]
+    assert entries[0]["products_available"]
+    assert entries[0]["T0_mean"] == 1205.0
+    assert entries[0]["residual_rms"] == pytest.approx(np.sqrt(0.5))
+    assert entries[0]["cloud_fraction_mean_range"] == pytest.approx(0.2)
+    assert pairs[0]["cloud_fraction_corr"] == pytest.approx(1.0)
+    assert pairs[0]["delta_s_corr"] == pytest.approx(1.0)

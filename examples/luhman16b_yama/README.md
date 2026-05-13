@@ -450,3 +450,17 @@ for chip in 0 1 2 3; do
     --max-map-samples 1000
 done
 ```
+
+Summarize the chip-to-chip posterior parameters, residuals, and map
+correlations:
+
+```bash
+python examples/luhman16b_yama/summarize_milestone2_chip_comparison.py \
+  --chips 0,1,2,3
+```
+
+The summary is written to
+`results/milestone2_3d_chip_comparison.json` and
+`results/milestone2_3d_chip_comparison.csv`. Inspect
+`pairwise_map_metrics` in the JSON for cloud-fraction and `delta_s` map
+correlations between chips.
