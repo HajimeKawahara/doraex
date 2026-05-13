@@ -1,5 +1,6 @@
 """Smoke tests for Milestone 2-1 fixed two-column retrieval."""
 
+import importlib.util
 from pathlib import Path
 
 import jax
@@ -31,6 +32,20 @@ jax.config.update("jax_enable_x64", True)
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_fixed_ell_sensitivity_script():
+    script_path = (
+        ROOT
+        / "examples"
+        / "luhman16b_yama"
+        / "run_milestone2_fixed_ell_sensitivity.py"
+    )
+    spec = importlib.util.spec_from_file_location("fixed_ell_sensitivity", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 pytestmark = pytest.mark.skipif(
@@ -249,3 +264,12 @@ def test_free_t0_cloud_two_column_free_ell_mcmc_smoke():
 
     assert samples["ell_b"].shape == (2,)
     assert np.isfinite(np.asarray(samples["ell_b"])).all()
+
+
+def test_fixed_ell_sensitivity_helpers():
+    module = _load_fixed_ell_sensitivity_script()
+    values = module.parse_ell_values("0.25, 0.30,0.4")
+
+    assert values == [0.25, 0.30, 0.4]
+    assert module.ell_tag(0.25) == "ell0p250"
+    assert module.ell_tag(0.4) == "ell0p400"

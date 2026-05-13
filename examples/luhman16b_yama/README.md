@@ -339,3 +339,55 @@ Inspect `free_t0_cloud_diagnostics_chip1.json` for `ell_b` quantiles, degree
 conversion, fractions with `ell_b < 0.3`, `ell_b < 0.4`, `ell_b > 0.6`, prior
 edge sticking, and correlations with `T0`, `log10 Pc`, `f_cloud`, `sigma_b`,
 and `surface_scale`.
+
+## Milestone 2-3c
+
+Milestone 2-3c tests whether the cloud-map resolution is driven by the
+`ell_b` prior choice. It runs the same free-`T0` grid retrieval as Milestone
+2-3a, but repeats the analysis at fixed `ell_b` values.
+
+Run the fixed-ell sensitivity chains:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_fixed_ell_sensitivity.py \
+  --nside 8 \
+  --chip-index 1 \
+  --ell-values 0.25,0.30,0.35,0.40,0.50 \
+  --num-warmup 1500 \
+  --num-samples 1000 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-geometry-to-milestone1
+```
+
+Build products for each fixed-ell run:
+
+```bash
+for tag in ell0p250 ell0p300 ell0p350 ell0p400 ell0p500; do
+  python examples/luhman16b_yama/make_milestone2_free_t0_cloud_products.py \
+    --nside 8 \
+    --chip-index 1 \
+    --samples results/milestone2_3c/mcmc_chip1_fixed_free_t0_cloud_${tag}.npz \
+    --out-dir results/milestone2_3c/${tag} \
+    --max-map-samples 1000
+done
+```
+
+Alternatively, pass explicit filenames if the shell expansion is inconvenient.
+The expected sample names are
+`mcmc_chip1_fixed_free_t0_cloud_ell0p250.npz`,
+`mcmc_chip1_fixed_free_t0_cloud_ell0p300.npz`, and so on.
+
+Summarize posterior parameters and residual metrics:
+
+```bash
+python examples/luhman16b_yama/summarize_milestone2_ell_sensitivity.py \
+  --ell-values 0.25,0.30,0.35,0.40,0.50
+```
+
+Use the summary together with the maps to decide whether low `ell_b` values
+produce sharper maps without degrading Figure 9 residuals. If low `ell_b`
+significantly increases residual RMS, the smooth map is data-driven. If the
+residuals are nearly unchanged, the displayed map resolution is prior-choice
+sensitive.
