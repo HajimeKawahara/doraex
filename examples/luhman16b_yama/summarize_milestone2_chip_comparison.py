@@ -48,6 +48,11 @@ def parse_args():
         "--out-csv",
         default=str(ROOT / "results" / "milestone2_3d_chip_comparison.csv"),
     )
+    parser.add_argument(
+        "--low-lmax-values",
+        default="2,3,5",
+        help="Comma-separated spherical-harmonic lmax values for low-l map comparison.",
+    )
     return parser.parse_args()
 
 
@@ -103,6 +108,87 @@ def _safe_corr(left, right):
     return float(np.corrcoef(left, right)[0, 1])
 
 
+def _standardize_map(values):
+    if values is None:
+        return None
+    values = np.asarray(values, dtype=float).ravel()
+    std = float(np.std(values))
+    if values.size < 2 or std == 0.0:
+        return None
+    return (values - float(np.mean(values))) / std
+
+
+def _standardized_rmse(left, right):
+    left = _standardize_map(left)
+    right = _standardize_map(right)
+    if left is None or right is None or left.shape != right.shape:
+        return None
+    return float(np.sqrt(np.mean((left - right) ** 2)))
+
+
+def _sign_agreement(left, right):
+    left = _standardize_map(left)
+    right = _standardize_map(right)
+    if left is None or right is None or left.shape != right.shape:
+        return None
+    return float(np.mean(np.sign(left) == np.sign(right)))
+
+
+def _tail_overlap(left, right, fraction=0.2, low=False):
+    left = _standardize_map(left)
+    right = _standardize_map(right)
+    if left is None or right is None or left.shape != right.shape:
+        return None
+    count = max(1, int(fraction * left.size))
+    if low:
+        left_indices = set(np.argsort(left)[:count])
+        right_indices = set(np.argsort(right)[:count])
+    else:
+        left_indices = set(np.argsort(left)[-count:])
+        right_indices = set(np.argsort(right)[-count:])
+    return float(len(left_indices & right_indices) / count)
+
+
+def _ensure_numpy_astropy_compat():
+    if not hasattr(np, "in1d"):
+        np.in1d = np.isin
+    try:
+        import importlib
+
+        function_base = importlib.import_module("numpy.lib._function_base_impl")
+    except Exception:
+        return
+    if hasattr(function_base, "_check_interpolation_as_method"):
+        return
+
+    def _check_interpolation_as_method(method, interpolation, fname):
+        if interpolation is None:
+            return method
+        if method != "linear":
+            raise TypeError(
+                f"{fname} received both method={method!r} and interpolation="
+                f"{interpolation!r}."
+            )
+        return interpolation
+
+    function_base._check_interpolation_as_method = _check_interpolation_as_method
+
+
+def _low_l_maps(maps, lmax):
+    _ensure_numpy_astropy_compat()
+    import healpy as hp
+
+    filtered = {}
+    for chip, values in maps.items():
+        standardized = _standardize_map(values)
+        if standardized is None:
+            continue
+        alm = hp.map2alm(standardized, lmax=lmax, iter=0)
+        low_l_map = hp.alm2map(alm, nside=hp.npix2nside(standardized.size), verbose=False)
+        filtered[chip] = _standardize_map(low_l_map)
+    return filtered
+
+
 def _entry_for_chip(args, chip):
     results_dir = _format_template(args.results_template, chip)
     sample_path = _sample_path(args, chip, results_dir)
@@ -110,6 +196,7 @@ def _entry_for_chip(args, chip):
     cloud_diag_path = results_dir / f"cloud_fraction_diagnostics_chip{chip}.json"
     residual_path = results_dir / f"residual_chip{chip}.npy"
     cloud_path = results_dir / f"cloud_fraction_mean_chip{chip}.npy"
+    contrast_path = results_dir / f"contrast_mean_chip{chip}.npy"
     delta_s_path = results_dir / f"delta_s_mean_chip{chip}.npy"
 
     entry = {
@@ -168,10 +255,10 @@ def _entry_for_chip(args, chip):
         entry["delta_s_mean_max"] = float(np.max(delta_s_mean))
         entry["delta_s_mean_std"] = float(np.std(delta_s_mean))
 
-    return entry, cloud_mean, delta_s_mean
+    return entry, cloud_mean, _safe_array(contrast_path), delta_s_mean
 
 
-def _pairwise_map_metrics(entries, cloud_maps, delta_s_maps):
+def _pairwise_map_metrics(entries, cloud_maps, contrast_maps, delta_s_maps):
     pairs = []
     for left_index, left in enumerate(entries):
         for right_index in range(left_index + 1, len(entries)):
@@ -188,9 +275,56 @@ def _pairwise_map_metrics(entries, cloud_maps, delta_s_maps):
                         delta_s_maps.get(left["chip"]),
                         delta_s_maps.get(right["chip"]),
                     ),
+                    "contrast_corr": _safe_corr(
+                        contrast_maps.get(left["chip"]),
+                        contrast_maps.get(right["chip"]),
+                    ),
+                    "contrast_sign_agreement": _sign_agreement(
+                        contrast_maps.get(left["chip"]),
+                        contrast_maps.get(right["chip"]),
+                    ),
+                    "contrast_hot20_overlap": _tail_overlap(
+                        contrast_maps.get(left["chip"]),
+                        contrast_maps.get(right["chip"]),
+                    ),
+                    "contrast_cold20_overlap": _tail_overlap(
+                        contrast_maps.get(left["chip"]),
+                        contrast_maps.get(right["chip"]),
+                        low=True,
+                    ),
+                    "contrast_standardized_rmse": _standardized_rmse(
+                        contrast_maps.get(left["chip"]),
+                        contrast_maps.get(right["chip"]),
+                    ),
                 }
             )
     return pairs
+
+
+def _low_l_pairwise_map_metrics(entries, contrast_maps, lmax_values):
+    metrics = []
+    for lmax in lmax_values:
+        try:
+            low_l_maps = _low_l_maps(contrast_maps, lmax=lmax)
+        except Exception as exc:
+            metrics.append({"lmax": int(lmax), "available": False, "error": str(exc)})
+            continue
+        for left_index, left in enumerate(entries):
+            for right_index in range(left_index + 1, len(entries)):
+                right = entries[right_index]
+                metrics.append(
+                    {
+                        "lmax": int(lmax),
+                        "available": True,
+                        "chip_left": left["chip"],
+                        "chip_right": right["chip"],
+                        "contrast_corr": _safe_corr(
+                            low_l_maps.get(left["chip"]),
+                            low_l_maps.get(right["chip"]),
+                        ),
+                    }
+                )
+    return metrics
 
 
 def _write_csv(path, entries):
@@ -207,19 +341,28 @@ def main():
     """Summarize chip-to-chip posterior and product diagnostics."""
 
     args = parse_args()
+    lmax_values = parse_chips(args.low_lmax_values)
     entries = []
     cloud_maps = {}
+    contrast_maps = {}
     delta_s_maps = {}
     for chip in args.chips:
-        entry, cloud_mean, delta_s_mean = _entry_for_chip(args, chip)
+        entry, cloud_mean, contrast_mean, delta_s_mean = _entry_for_chip(args, chip)
         entries.append(entry)
         if cloud_mean is not None:
             cloud_maps[chip] = cloud_mean
+        if contrast_mean is not None:
+            contrast_maps[chip] = contrast_mean
         if delta_s_mean is not None:
             delta_s_maps[chip] = delta_s_mean
 
-    pairs = _pairwise_map_metrics(entries, cloud_maps, delta_s_maps)
-    summary = {"entries": entries, "pairwise_map_metrics": pairs}
+    pairs = _pairwise_map_metrics(entries, cloud_maps, contrast_maps, delta_s_maps)
+    low_l_pairs = _low_l_pairwise_map_metrics(entries, contrast_maps, lmax_values)
+    summary = {
+        "entries": entries,
+        "pairwise_map_metrics": pairs,
+        "low_l_pairwise_map_metrics": low_l_pairs,
+    }
 
     out_json = Path(args.out_json)
     out_json.parent.mkdir(parents=True, exist_ok=True)

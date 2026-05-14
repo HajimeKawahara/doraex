@@ -380,6 +380,10 @@ def test_chip_comparison_summary_helpers(tmp_path):
             np.array([0.1, 0.2, 0.3]) + chip,
         )
         np.save(
+            out_dir / f"contrast_mean_chip{chip}.npy",
+            np.array([0.1, 0.2, 0.3]) + chip,
+        )
+        np.save(
             out_dir / f"delta_s_mean_chip{chip}.npy",
             np.array([0.3, 0.2, 0.1]) + chip,
         )
@@ -391,14 +395,23 @@ def test_chip_comparison_summary_helpers(tmp_path):
     )
     entries = []
     cloud_maps = {}
+    contrast_maps = {}
     delta_s_maps = {}
     for chip in args.chips:
-        entry, cloud_mean, delta_s_mean = module._entry_for_chip(args, chip)
+        entry, cloud_mean, contrast_mean, delta_s_mean = module._entry_for_chip(
+            args, chip
+        )
         entries.append(entry)
         cloud_maps[chip] = cloud_mean
+        contrast_maps[chip] = contrast_mean
         delta_s_maps[chip] = delta_s_mean
 
-    pairs = module._pairwise_map_metrics(entries, cloud_maps, delta_s_maps)
+    pairs = module._pairwise_map_metrics(
+        entries,
+        cloud_maps,
+        contrast_maps,
+        delta_s_maps,
+    )
 
     assert entries[0]["sample_available"]
     assert entries[0]["products_available"]
@@ -407,3 +420,5 @@ def test_chip_comparison_summary_helpers(tmp_path):
     assert entries[0]["cloud_fraction_mean_range"] == pytest.approx(0.2)
     assert pairs[0]["cloud_fraction_corr"] == pytest.approx(1.0)
     assert pairs[0]["delta_s_corr"] == pytest.approx(1.0)
+    assert pairs[0]["contrast_corr"] == pytest.approx(1.0)
+    assert pairs[0]["contrast_hot20_overlap"] == pytest.approx(1.0)
