@@ -1,6 +1,8 @@
 """Generic ExoJAX forward-model adapters."""
 
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -296,7 +298,16 @@ class Luhman16BPowerLawColumnModel:
         self.parameters = parameters
         self.molecule_paths = {key: str(value) for key, value in molecule_paths.items()}
         self.cia_paths = {key: str(value) for key, value in cia_paths.items()}
-        self.opacity_cache_dir = Path(opacity_cache_dir)
+        self.opacity_cache_dir = _opacity_cache_namespace(
+            opacity_cache_dir,
+            self.observed_wavelengths,
+            nx=nx,
+            pressure_top=pressure_top,
+            pressure_btm=pressure_btm,
+            nlayer=nlayer,
+            t_low=t_low,
+            t_high=t_high,
+        )
         self.opacity_cache_dir.mkdir(parents=True, exist_ok=True)
 
         import jax.numpy as jnp
@@ -471,3 +482,35 @@ class Luhman16BPowerLawColumnModel:
         """Return the fixed cloudy local spectrum."""
 
         return self.evaluate(cloudy=True)
+
+
+def _opacity_cache_namespace(
+    opacity_cache_dir,
+    observed_wavelengths,
+    nx,
+    pressure_top,
+    pressure_btm,
+    nlayer,
+    t_low,
+    t_high,
+):
+    """Return a wavelength-grid-specific opacity cache directory."""
+
+    wavelengths = np.asarray(observed_wavelengths, dtype=float)
+    payload = {
+        "wave_min": float(np.min(wavelengths)),
+        "wave_max": float(np.max(wavelengths)),
+        "nx": int(nx),
+        "pressure_top": float(pressure_top),
+        "pressure_btm": float(pressure_btm),
+        "nlayer": int(nlayer),
+        "t_low": float(t_low),
+        "t_high": float(t_high),
+        "xsmode": "premodit",
+    }
+    digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    label = (
+        f"wave{payload['wave_min']:.3f}-{payload['wave_max']:.3f}"
+        f"_nx{payload['nx']}_{digest[:10]}"
+    )
+    return Path(opacity_cache_dir) / label

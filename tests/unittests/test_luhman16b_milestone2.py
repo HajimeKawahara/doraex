@@ -18,6 +18,7 @@ from doraex.inference.numpyro_models import (
     free_t0_cloud_two_column_doppler_model,
 )
 from doraex.spectra.exojax_forward import (
+    _opacity_cache_namespace,
     synthetic_cloud_profile_grid,
     synthetic_t0_cloud_profile_grid,
     synthetic_two_column_profiles,
@@ -318,6 +319,37 @@ def test_chip_aware_milestone2_default_paths():
         module.free_t0_cloud_sample_path("results/m2", 2, "fixed").name
         == "mcmc_chip2_fixed_free_t0_cloud.npz"
     )
+
+
+def test_opacity_cache_namespace_depends_on_wavelength_grid():
+    base = ROOT / "data" / "opacities" / "luhman16b_powerlaw"
+    chip0 = load_luhman16b_chip(DATA_DIR, chip_index=0)
+    chip1 = load_luhman16b_chip(DATA_DIR, chip_index=1)
+
+    cache0 = _opacity_cache_namespace(
+        base,
+        chip0.wavelengths,
+        nx=4500,
+        pressure_top=1.0e-4,
+        pressure_btm=1.0e2,
+        nlayer=101,
+        t_low=210.0,
+        t_high=3500.0,
+    )
+    cache1 = _opacity_cache_namespace(
+        base,
+        chip1.wavelengths,
+        nx=4500,
+        pressure_top=1.0e-4,
+        pressure_btm=1.0e2,
+        nlayer=101,
+        t_low=210.0,
+        t_high=3500.0,
+    )
+
+    assert cache0.parent == base
+    assert cache1.parent == base
+    assert cache0 != cache1
 
 
 def test_chip_comparison_summary_helpers(tmp_path):
