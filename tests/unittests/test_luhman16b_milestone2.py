@@ -16,6 +16,7 @@ from doraex.inference.numpyro_models import (
     fixed_two_column_doppler_model,
     free_cloud_two_column_doppler_model,
     free_t0_cloud_two_column_doppler_model,
+    joint_free_t0_cloud_two_column_doppler_model,
 )
 from doraex.spectra.exojax_forward import (
     _opacity_cache_namespace,
@@ -232,6 +233,58 @@ def test_free_t0_cloud_two_column_model_trace_smoke():
     assert trace["log_p_cloud"]["value"].shape == ()
     assert trace["f_cloud"]["value"].shape == ()
     assert trace["surface_scale"]["value"].shape == ()
+
+
+def test_joint_free_t0_cloud_two_column_model_trace_smoke():
+    chip0 = subset_chip_data(
+        load_luhman16b_chip(DATA_DIR, chip_index=0),
+        wavelength_step=256,
+        phase_count=2,
+    )
+    chip1 = subset_chip_data(
+        load_luhman16b_chip(DATA_DIR, chip_index=1),
+        wavelength_step=256,
+        phase_count=2,
+    )
+    geometry = build_luhman16b_geometry(nside=1)
+    t0_grid = np.linspace(1000.0, 1700.0, 5)
+    log_p_cloud_grid = np.linspace(-2.0, 2.0, 5)
+    clear_grids = []
+    cloudy_grids = []
+    for chip in (chip0, chip1):
+        clear_profile_grid, cloudy_profile_grid = synthetic_t0_cloud_profile_grid(
+            chip.wavelengths,
+            t0_grid,
+            log_p_cloud_grid,
+        )
+        clear_grids.append(clear_profile_grid)
+        cloudy_grids.append(cloudy_profile_grid)
+    seeded_model = handlers.seed(
+        joint_free_t0_cloud_two_column_doppler_model,
+        jax.random.PRNGKey(0),
+    )
+    trace = handlers.trace(seeded_model).get_trace(
+        jnp.asarray(np.stack([chip0.flux, chip1.flux], axis=0)),
+        geometry.theta,
+        geometry.phi,
+        geometry.distance_matrix,
+        jnp.asarray(chip0.obs_times),
+        jnp.asarray(np.stack([chip0.wavelengths, chip1.wavelengths], axis=0)),
+        jnp.asarray(np.stack([t0_grid, t0_grid], axis=0)),
+        jnp.asarray(np.stack([log_p_cloud_grid, log_p_cloud_grid], axis=0)),
+        jnp.asarray(np.stack(clear_grids, axis=0)),
+        jnp.asarray(np.stack(cloudy_grids, axis=0)),
+        period_mode="fixed",
+        fixed_ell_b=0.3,
+    )
+
+    assert trace["obs"]["value"].shape == (chip0.flux.size + chip1.flux.size,)
+    assert trace["T0"]["value"].shape == (2,)
+    assert trace["log_p_cloud"]["value"].shape == (2,)
+    assert trace["f_cloud"]["value"].shape == (2,)
+    assert trace["surface_scale"]["value"].shape == (2,)
+    assert trace["sigma_d"]["value"].shape == (2,)
+    assert trace["sigma_b"]["value"].shape == ()
 
 
 def test_free_t0_cloud_two_column_mcmc_smoke():

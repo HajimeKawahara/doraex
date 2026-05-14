@@ -464,3 +464,44 @@ The summary is written to
 `results/milestone2_3d_chip_comparison.csv`. Inspect
 `pairwise_map_metrics` in the JSON for cloud-fraction and `delta_s` map
 correlations between chips.
+
+## Milestone 2-4a
+
+Milestone 2-4a performs a joint multi-chip Doppler retrieval. It uses one
+shared surface contrast map for all chips, while keeping `T0`, `log10 Pc`,
+`f_cloud`, `sigma_d`, `surface_scale`, and per-phase `log_w` chip-specific.
+This absorbs chip-to-chip spectral normalization and atmospheric differences
+without forcing each chip to produce an independent map.
+
+Run the joint retrieval:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_joint_chips.py \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.98 \
+  --max-tree-depth 11 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+Build the joint map and per-chip residual products:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --samples results/milestone2_4a/mcmc_joint_chips_free_t0_cloud.npz \
+  --out-dir results/milestone2_4a \
+  --max-map-samples 1000
+```
+
+The main shared-map products are `contrast_mean_joint.npy`,
+`contrast_var_joint.npy`, and `figure8_shared_contrast_joint.png`. Per-chip
+cloud-fraction maps, residuals, and Figure 9 panels are also written so the
+joint fit can be checked chip by chip.

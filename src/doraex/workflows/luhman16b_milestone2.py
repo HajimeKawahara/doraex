@@ -211,6 +211,63 @@ def load_milestone2_free_t0_cloud_inputs(
     )
 
 
+def load_milestone2_joint_free_t0_cloud_inputs(
+    data_dir,
+    chip_indices=(0, 1, 2, 3),
+    profile_grid_template=None,
+    nside=8,
+    smoke_test=False,
+    smoke_wavelength_step=64,
+    smoke_phase_count=4,
+    smoke_t0_grid=None,
+    smoke_log_p_cloud_grid=None,
+):
+    """Load multi-chip Luhman 16B data and T0/cloud profile grids."""
+
+    chip_data_list = []
+    t0_grids = []
+    log_p_cloud_grids = []
+    clear_profile_grids = []
+    cloudy_profile_grids = []
+    geometry = build_luhman16b_geometry(nside=nside)
+    for chip_index in chip_indices:
+        profile_grid_path = None
+        if profile_grid_template is not None:
+            profile_grid_path = str(profile_grid_template).format(chip=chip_index)
+        (
+            chip_data,
+            _,
+            t0_grid,
+            log_p_cloud_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+        ) = load_milestone2_free_t0_cloud_inputs(
+            data_dir,
+            profile_grid_path=profile_grid_path,
+            chip_index=chip_index,
+            nside=nside,
+            smoke_test=smoke_test,
+            smoke_wavelength_step=smoke_wavelength_step,
+            smoke_phase_count=smoke_phase_count,
+            smoke_t0_grid=smoke_t0_grid,
+            smoke_log_p_cloud_grid=smoke_log_p_cloud_grid,
+        )
+        chip_data_list.append(chip_data)
+        t0_grids.append(t0_grid)
+        log_p_cloud_grids.append(log_p_cloud_grid)
+        clear_profile_grids.append(clear_profile_grid)
+        cloudy_profile_grids.append(cloudy_profile_grid)
+
+    return (
+        chip_data_list,
+        geometry,
+        np.asarray(t0_grids),
+        np.asarray(log_p_cloud_grids),
+        np.asarray(clear_profile_grids),
+        np.asarray(cloudy_profile_grids),
+    )
+
+
 def make_fixed_two_column_nuts_kernel(
     model,
     n_phase,
@@ -539,6 +596,144 @@ def run_free_t0_cloud_two_column_mcmc(
     return mcmc
 
 
+def make_joint_free_t0_cloud_nuts_kernel(
+    model,
+    n_chip,
+    n_phase,
+    period_mode="fixed",
+    fixed_period=4.83,
+    fixed_ell_b=0.3,
+    fix_geometry=True,
+    target_accept_prob=0.98,
+    dense_mass=True,
+    max_tree_depth=10,
+    init_log_p_cloud=1.28,
+    init_t0=1215.0,
+):
+    """Create a NUTS kernel for joint multi-chip Milestone 2-4 runs."""
+
+    from numpyro.infer import NUTS, init_to_value
+
+    init_values = {
+        "T0": jnp.full((n_chip,), init_t0),
+        "log_p_cloud": jnp.full((n_chip,), init_log_p_cloud),
+        "log_w": jnp.zeros((n_chip, n_phase)),
+        "f_cloud": jnp.full((n_chip,), 0.5),
+        "surface_scale": jnp.full((n_chip,), 0.0077),
+        "sigma_d": jnp.full((n_chip,), 0.039),
+        "sigma_b": 0.05,
+    }
+    if not fix_geometry:
+        init_values.update({"cosi": 0.485, "v": 31.2, "q1": 0.81, "q2": 0.59})
+    if fixed_ell_b is None:
+        init_values["ell_b"] = 0.3
+    if period_mode == "sampled":
+        init_values["P"] = 4.83
+    elif period_mode == "fixed":
+        init_values["P"] = fixed_period
+    return NUTS(
+        model,
+        target_accept_prob=target_accept_prob,
+        dense_mass=dense_mass,
+        max_tree_depth=max_tree_depth,
+        init_strategy=init_to_value(values=init_values),
+    )
+
+
+def run_joint_free_t0_cloud_two_column_mcmc(
+    chip_data_list,
+    geometry,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    num_warmup=500,
+    num_samples=1000,
+    num_chains=1,
+    seed=0,
+    period_mode="fixed",
+    fixed_period=4.83,
+    t0_bounds=(1000.0, 1700.0),
+    log_p_cloud_bounds=(-2.0, 2.0),
+    init_t0=1215.0,
+    init_log_p_cloud=1.28,
+    target_accept_prob=0.98,
+    dense_mass=True,
+    max_tree_depth=10,
+    sigma_b_scale=0.1,
+    fixed_ell_b=0.3,
+    fix_geometry=True,
+    fixed_cosi=0.485,
+    fixed_v=31.2,
+    fixed_q1=0.81,
+    fixed_q2=0.59,
+    progress_bar=True,
+):
+    """Run joint multi-chip grid-based Milestone 2-4a retrieval."""
+
+    from numpyro.infer import MCMC
+    from doraex.inference.numpyro_models import (
+        joint_free_t0_cloud_two_column_doppler_model,
+    )
+
+    data = jnp.asarray(np.stack([chip.flux for chip in chip_data_list], axis=0))
+    obs_times = jnp.asarray(chip_data_list[0].obs_times)
+    wavelengths = jnp.asarray(np.stack([chip.wavelengths for chip in chip_data_list], axis=0))
+    t0_grid = jnp.asarray(t0_grid)
+    log_p_cloud_grid = jnp.asarray(log_p_cloud_grid)
+    clear_profile_grid = jnp.asarray(clear_profile_grid)
+    cloudy_profile_grid = jnp.asarray(cloudy_profile_grid)
+
+    def model(data_observed):
+        return joint_free_t0_cloud_two_column_doppler_model(
+            data_observed,
+            geometry.theta,
+            geometry.phi,
+            geometry.distance_matrix,
+            obs_times,
+            wavelengths,
+            t0_grid,
+            log_p_cloud_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+            period_mode=period_mode,
+            fixed_period=fixed_period,
+            t0_bounds=t0_bounds,
+            log_p_cloud_bounds=log_p_cloud_bounds,
+            sigma_b_scale=sigma_b_scale,
+            fixed_ell_b=fixed_ell_b,
+            fix_geometry=fix_geometry,
+            fixed_cosi=fixed_cosi,
+            fixed_v=fixed_v,
+            fixed_q1=fixed_q1,
+            fixed_q2=fixed_q2,
+        )
+
+    kernel = make_joint_free_t0_cloud_nuts_kernel(
+        model,
+        n_chip=len(chip_data_list),
+        n_phase=chip_data_list[0].flux.shape[0],
+        period_mode=period_mode,
+        fixed_period=fixed_period,
+        fixed_ell_b=fixed_ell_b,
+        fix_geometry=fix_geometry,
+        target_accept_prob=target_accept_prob,
+        dense_mass=dense_mass,
+        max_tree_depth=max_tree_depth,
+        init_log_p_cloud=init_log_p_cloud,
+        init_t0=init_t0,
+    )
+    mcmc = MCMC(
+        kernel,
+        num_warmup=num_warmup,
+        num_samples=num_samples,
+        num_chains=num_chains,
+        progress_bar=progress_bar,
+    )
+    mcmc.run(jax.random.PRNGKey(seed), data)
+    return mcmc
+
+
 def save_fixed_two_column_samples(
     output_path,
     samples,
@@ -645,6 +840,50 @@ def save_free_t0_cloud_two_column_samples(
             "clear_profile_grid": np.asarray(clear_profile_grid),
             "cloudy_profile_grid": np.asarray(cloudy_profile_grid),
             "chip_index": np.asarray(chip_data.chip_index),
+            "nside": np.asarray(geometry.nside),
+            "period_mode": np.asarray(period_mode),
+            "t0_bounds": np.asarray(t0_bounds),
+            "log_p_cloud_bounds": np.asarray(log_p_cloud_bounds),
+            "sigma_b_scale": np.asarray(
+                np.nan if sigma_b_scale is None else sigma_b_scale
+            ),
+            "fixed_ell_b": np.asarray(np.nan if fixed_ell_b is None else fixed_ell_b),
+            "fix_geometry": np.asarray(fix_geometry),
+        }
+    )
+    np.savez(output_path, **save_data)
+
+
+def save_joint_free_t0_cloud_two_column_samples(
+    output_path,
+    samples,
+    chip_data_list,
+    geometry,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    period_mode,
+    t0_bounds,
+    log_p_cloud_bounds,
+    sigma_b_scale=None,
+    fixed_ell_b=None,
+    fix_geometry=True,
+):
+    """Save joint multi-chip T0/cloud samples and profile metadata."""
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    save_data = {name: np.asarray(value) for name, value in samples.items()}
+    save_data.update(
+        {
+            "wavelengths": np.asarray([chip.wavelengths for chip in chip_data_list]),
+            "obs_times": np.asarray(chip_data_list[0].obs_times),
+            "t0_grid": np.asarray(t0_grid),
+            "log_p_cloud_grid": np.asarray(log_p_cloud_grid),
+            "clear_profile_grid": np.asarray(clear_profile_grid),
+            "cloudy_profile_grid": np.asarray(cloudy_profile_grid),
+            "chip_indices": np.asarray([chip.chip_index for chip in chip_data_list]),
             "nside": np.asarray(geometry.nside),
             "period_mode": np.asarray(period_mode),
             "t0_bounds": np.asarray(t0_bounds),
@@ -806,6 +1045,48 @@ def two_column_operator_from_free_t0_cloud_sample(
     )
 
 
+def _chip_sample(sample, chip_position):
+    """Return a view of chip-specific sample entries for one chip."""
+
+    result = dict(sample)
+    for name in ("T0", "log_p_cloud", "f_cloud", "surface_scale", "sigma_d", "log_w"):
+        if name in result:
+            result[name] = jnp.asarray(result[name])[chip_position]
+    return result
+
+
+def joint_operators_from_free_t0_cloud_sample(
+    chip_data_list,
+    geometry,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    sample,
+):
+    """Build concatenated joint baseline and contrast matrix for one sample."""
+
+    baselines = []
+    contrast_matrices = []
+    for chip_position, chip_data in enumerate(chip_data_list):
+        chip_sample = _chip_sample(sample, chip_position)
+        baseline, contrast_matrix = two_column_operator_from_free_t0_cloud_sample(
+            chip_data,
+            geometry,
+            t0_grid[chip_position],
+            log_p_cloud_grid[chip_position],
+            clear_profile_grid[chip_position],
+            cloudy_profile_grid[chip_position],
+            chip_sample,
+        )
+        baselines.append(baseline)
+        contrast_matrices.append(contrast_matrix)
+    return jnp.concatenate(baselines, axis=0), jnp.concatenate(
+        contrast_matrices,
+        axis=0,
+    )
+
+
 def conditional_contrast_map_for_sample(
     chip_data,
     geometry,
@@ -922,6 +1203,58 @@ def conditional_contrast_map_for_free_t0_cloud_sample(
     )
     return conditional_map_posterior(
         jnp.asarray(chip_data.flux).reshape(-1) - baseline,
+        contrast_matrix,
+        prior_mean,
+        prior_covariance,
+        noise_variance,
+    )
+
+
+def conditional_contrast_map_for_joint_free_t0_cloud_sample(
+    chip_data_list,
+    geometry,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    sample,
+    gp_jitter=1.0e-6,
+):
+    """Compute conditional shared contrast-map posterior for one joint sample."""
+
+    baseline, contrast_matrix = joint_operators_from_free_t0_cloud_sample(
+        chip_data_list,
+        geometry,
+        t0_grid,
+        log_p_cloud_grid,
+        clear_profile_grid,
+        cloudy_profile_grid,
+        sample,
+    )
+    prior_covariance = add_diagonal_jitter(
+        squared_exponential_covariance(
+            geometry.distance_matrix,
+            jnp.asarray(sample["sigma_b"]),
+            jnp.asarray(sample["ell_b"]),
+        ),
+        jitter=gp_jitter,
+    )
+    prior_mean = jnp.zeros(contrast_matrix.shape[1])
+    residual = jnp.concatenate(
+        [jnp.asarray(chip.flux).reshape(-1) for chip in chip_data_list],
+        axis=0,
+    ) - baseline
+    noise_variance = jnp.concatenate(
+        [
+            jnp.asarray(sample["sigma_d"])[chip_position] ** 2
+            * jnp.ones(chip.flux.size)
+            + 1.0e-6
+            for chip_position, chip in enumerate(chip_data_list)
+        ],
+        axis=0,
+    )
+    return conditional_map_posterior(
+        residual,
         contrast_matrix,
         prior_mean,
         prior_covariance,
@@ -1079,6 +1412,61 @@ def compute_free_t0_cloud_contrast_map_moments(
     return contrast_mean, contrast_variance, cloud_fraction_mean, cloud_fraction_variance
 
 
+def compute_joint_free_t0_cloud_contrast_map_moments(
+    chip_data_list,
+    geometry,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    samples,
+    sample_indices=None,
+):
+    """Compute shared contrast-map moments for joint multi-chip runs."""
+
+    sample_count = len(np.asarray(samples["sigma_b"]))
+    if sample_indices is None:
+        sample_indices = np.arange(sample_count)
+    else:
+        sample_indices = np.asarray(sample_indices)
+
+    conditional_means = []
+    conditional_diag_sum = jnp.zeros(geometry.theta.shape[0])
+    f_cloud_values = []
+    for index in sample_indices:
+        sample = _fixed_sample_at(samples, int(index))
+        mean, covariance = conditional_contrast_map_for_joint_free_t0_cloud_sample(
+            chip_data_list,
+            geometry,
+            t0_grid,
+            log_p_cloud_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+            sample,
+        )
+        conditional_means.append(mean)
+        conditional_diag_sum = conditional_diag_sum + jnp.diag(covariance)
+        f_cloud_values.append(jnp.asarray(sample["f_cloud"]))
+
+    mean_stack = jnp.stack(conditional_means, axis=0)
+    contrast_mean = jnp.mean(mean_stack, axis=0)
+    within = conditional_diag_sum / len(sample_indices)
+    between = jnp.mean((mean_stack - contrast_mean[None, :]) ** 2, axis=0)
+    contrast_variance = within + between
+
+    f_cloud_stack = jnp.stack(f_cloud_values, axis=0)
+    cloud_fraction_samples = f_cloud_stack[:, :, None] + mean_stack[:, None, :]
+    cloud_fraction_mean = jnp.mean(cloud_fraction_samples, axis=0)
+    cloud_fraction_variance = (
+        jnp.mean(
+            (cloud_fraction_samples - cloud_fraction_mean[None, :, :]) ** 2,
+            axis=0,
+        )
+        + within[None, :]
+    )
+    return contrast_mean, contrast_variance, cloud_fraction_mean, cloud_fraction_variance
+
+
 def fixed_two_column_median_sample(samples):
     """Return marginal posterior medians for Milestone 2-1 samples."""
 
@@ -1181,3 +1569,35 @@ def reconstruct_free_t0_cloud_two_column_timeseries(
     )
     model = baseline + contrast_matrix @ jnp.asarray(contrast_map)
     return model.reshape(chip_data.flux.shape), sample
+
+
+def reconstruct_joint_free_t0_cloud_two_column_timeseries(
+    chip_data_list,
+    geometry,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    samples,
+    contrast_map,
+):
+    """Reconstruct per-chip spectra from median joint parameters."""
+
+    sample = fixed_two_column_median_sample(samples)
+    models = []
+    chip_samples = []
+    for chip_position, chip_data in enumerate(chip_data_list):
+        chip_sample = _chip_sample(sample, chip_position)
+        baseline, contrast_matrix = two_column_operator_from_free_t0_cloud_sample(
+            chip_data,
+            geometry,
+            t0_grid[chip_position],
+            log_p_cloud_grid[chip_position],
+            clear_profile_grid[chip_position],
+            cloudy_profile_grid[chip_position],
+            chip_sample,
+        )
+        model = baseline + contrast_matrix @ jnp.asarray(contrast_map)
+        models.append(model.reshape(chip_data.flux.shape))
+        chip_samples.append(chip_sample)
+    return models, sample, chip_samples

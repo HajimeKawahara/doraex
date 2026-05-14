@@ -498,3 +498,160 @@ def free_t0_cloud_two_column_doppler_model(
         gp_jitter=gp_jitter,
         noise_jitter=noise_jitter,
     )
+
+
+def joint_free_t0_cloud_two_column_doppler_model(
+    data,
+    theta,
+    phi,
+    distance_matrix,
+    obs_times,
+    wavelengths,
+    t0_grid,
+    log_p_cloud_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    period_mode="fixed",
+    fixed_period=4.83,
+    t0_bounds=(1000.0, 1700.0),
+    log_p_cloud_bounds=(-2.0, 2.0),
+    pixel_area=1.0,
+    log_w_scale=0.1,
+    surface_scale_location=0.0077,
+    surface_scale_scale=0.3,
+    sigma_b_scale=0.1,
+    fixed_ell_b=0.3,
+    fix_geometry=True,
+    fixed_cosi=0.485,
+    fixed_v=31.2,
+    fixed_q1=0.81,
+    fixed_q2=0.59,
+    gp_jitter=0.5e-6,
+    noise_jitter=1.0e-6,
+):
+    """Joint multi-chip retrieval with a shared contrast map.
+
+    Atmospheric and nuisance parameters are chip-specific, while the cloud
+    contrast map and its GP hyperparameters are shared across chips.
+    """
+
+    n_chip = data.shape[0]
+    n_phase = data.shape[1]
+
+    if fix_geometry:
+        cosi = numpyro.deterministic("cosi", jnp.asarray(fixed_cosi))
+        vrot = numpyro.deterministic("v", jnp.asarray(fixed_v))
+        q1 = numpyro.deterministic("q1", jnp.asarray(fixed_q1))
+        q2 = numpyro.deterministic("q2", jnp.asarray(fixed_q2))
+    else:
+        cosi = numpyro.sample("cosi", dist.Uniform(0.0, 1.0))
+        vrot = numpyro.sample("v", dist.Uniform(20.0, 50.0))
+        q1 = numpyro.sample("q1", dist.Uniform(0.0, 1.0))
+        q2 = numpyro.sample("q2", dist.Uniform(0.0, 1.0))
+    inclination = jnp.arccos(cosi)
+    u1, u2 = kipping_q_to_u(q1, q2)
+    numpyro.deterministic("u1", u1)
+    numpyro.deterministic("u2", u2)
+
+    if period_mode == "sampled":
+        period = numpyro.sample("P", dist.Uniform(4.8, 5.4))
+    elif period_mode == "fixed":
+        period = numpyro.deterministic("P", jnp.asarray(fixed_period))
+    else:
+        raise ValueError("period_mode must be 'sampled' or 'fixed'")
+
+    t0 = numpyro.sample(
+        "T0",
+        dist.Uniform(t0_bounds[0], t0_bounds[1]).expand([n_chip]),
+    )
+    log_p_cloud = numpyro.sample(
+        "log_p_cloud",
+        dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]).expand([n_chip]),
+    )
+    mean_cloud_fraction = numpyro.sample(
+        "f_cloud",
+        dist.Uniform(0.0, 1.0).expand([n_chip]),
+    )
+    surface_scale = numpyro.sample(
+        "surface_scale",
+        dist.LogNormal(
+            jnp.log(surface_scale_location),
+            surface_scale_scale,
+        ).expand([n_chip]),
+    )
+    log_w = numpyro.sample(
+        "log_w",
+        dist.Normal(0.0, log_w_scale).expand([n_chip, n_phase]),
+    )
+    sigma_d = numpyro.sample(
+        "sigma_d",
+        dist.LogNormal(jnp.log(0.03), 1.0).expand([n_chip]),
+    )
+
+    baselines = []
+    contrast_matrices = []
+    noise_variances = []
+    for chip_index in range(n_chip):
+        clear_profile = _interpolate_profile_grid(
+            t0_grid[chip_index],
+            clear_profile_grid[chip_index],
+            t0[chip_index],
+        )
+        cloudy_profile = _interpolate_profile_grid_2d(
+            t0_grid[chip_index],
+            log_p_cloud_grid[chip_index],
+            cloudy_profile_grid[chip_index],
+            t0[chip_index],
+            log_p_cloud[chip_index],
+        )
+        baseline, contrast_matrix = two_column_operator_from_times(
+            theta,
+            phi,
+            vrot,
+            inclination,
+            u1,
+            u2,
+            obs_times,
+            period,
+            wavelengths[chip_index],
+            clear_profile,
+            cloudy_profile,
+            mean_cloud_fraction[chip_index],
+            weights=jnp.exp(log_w[chip_index]),
+            pixel_area=pixel_area,
+        )
+        baseline = surface_scale[chip_index] * baseline
+        contrast_matrix = surface_scale[chip_index] * contrast_matrix
+        baselines.append(baseline)
+        contrast_matrices.append(contrast_matrix)
+        noise_variances.append(
+            diagonal_noise_variance(
+                contrast_matrix.shape[0],
+                sigma_d[chip_index],
+                jitter=noise_jitter,
+            )
+        )
+
+    baseline = jnp.concatenate(baselines, axis=0)
+    contrast_matrix = jnp.concatenate(contrast_matrices, axis=0)
+    noise_variance = jnp.concatenate(noise_variances, axis=0)
+
+    sigma_b = numpyro.sample("sigma_b", dist.HalfNormal(sigma_b_scale))
+    if fixed_ell_b is None:
+        ell_b = numpyro.sample("ell_b", dist.Uniform(0.1, 1.5))
+    else:
+        ell_b = numpyro.deterministic("ell_b", jnp.asarray(fixed_ell_b))
+    contrast_covariance = add_diagonal_jitter(
+        squared_exponential_covariance(distance_matrix, sigma_b, ell_b),
+        jitter=gp_jitter,
+    )
+    covariance_factor = contrast_matrix @ jnp.linalg.cholesky(contrast_covariance)
+    numpyro.sample(
+        "obs",
+        dist.LowRankMultivariateNormal(
+            loc=baseline,
+            cov_factor=covariance_factor,
+            cov_diag=noise_variance,
+        ),
+        obs=data.reshape(-1),
+    )
