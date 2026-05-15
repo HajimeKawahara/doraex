@@ -498,6 +498,7 @@ python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
   --nside 8 \
   --samples results/milestone2_4a/mcmc_joint_chips_free_t0_cloud.npz \
   --out-dir results/milestone2_4a \
+  --cloud-fraction-cmap afmhot \
   --max-map-samples 1000
 ```
 
@@ -538,6 +539,7 @@ python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
   --m2-4b \
   --chip-indices 0,1,2,3 \
   --nside 8 \
+  --cloud-fraction-cmap afmhot \
   --max-map-samples 1000
 ```
 

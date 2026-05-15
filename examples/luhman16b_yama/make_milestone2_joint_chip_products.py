@@ -65,6 +65,11 @@ def parse_args():
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
+    parser.add_argument(
+        "--cloud-fraction-cmap",
+        default="afmhot",
+        help="Matplotlib colormap for the cloud-fraction map upper panel.",
+    )
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.m2_4b:
@@ -240,6 +245,7 @@ def main():
             cloud_mean_by_chip[chip_position],
             np.sqrt(cloud_var_by_chip[chip_position]),
             out_dir / f"figure8_cloud_fraction_chip{chip_index}.png",
+            cmap=args.cloud_fraction_cmap,
         )
         _plot_delta_s(
             delta_s_mean,

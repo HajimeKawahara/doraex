@@ -117,7 +117,17 @@ def _ensure_numpy_astropy_compat():
         function_base._check_interpolation_as_method = _check_interpolation_as_method
 
 
-def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, bottom_unit, out_path):
+def _plot_two_panel_map(
+    top_map,
+    bottom_map,
+    top_title,
+    bottom_title,
+    top_unit,
+    bottom_unit,
+    out_path,
+    top_cmap="afmhot",
+    bottom_cmap="viridis",
+):
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
     import matplotlib.pyplot as plt
     try:
@@ -141,7 +151,7 @@ def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, 
         top_map,
         fig=fig.number,
         sub=(2, 1, 1),
-        cmap="coolwarm",
+        cmap=top_cmap,
         title=top_title,
         unit=top_unit,
         flip="geo",
@@ -151,7 +161,7 @@ def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, 
         bottom_map,
         fig=fig.number,
         sub=(2, 1, 2),
-        cmap="viridis",
+        cmap=bottom_cmap,
         title=bottom_title,
         unit=bottom_unit,
         flip="geo",
@@ -161,7 +171,7 @@ def _plot_two_panel_map(top_map, bottom_map, top_title, bottom_title, top_unit, 
     plt.close(fig)
 
 
-def _plot_cloud_fraction(mean_map, std_map, out_path):
+def _plot_cloud_fraction(mean_map, std_map, out_path, cmap="afmhot"):
     _plot_two_panel_map(
         mean_map,
         std_map,
@@ -170,6 +180,7 @@ def _plot_cloud_fraction(mean_map, std_map, out_path):
         "f_cloud + b",
         "std",
         out_path,
+        top_cmap=cmap,
     )
 
 
