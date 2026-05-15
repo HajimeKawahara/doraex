@@ -609,16 +609,18 @@ def make_joint_free_t0_cloud_nuts_kernel(
     max_tree_depth=10,
     init_log_p_cloud=1.28,
     init_t0=1215.0,
+    shared_atmosphere=False,
 ):
     """Create a NUTS kernel for joint multi-chip Milestone 2-4 runs."""
 
     from numpyro.infer import NUTS, init_to_value
 
+    atmosphere_shape = () if shared_atmosphere else (n_chip,)
     init_values = {
-        "T0": jnp.full((n_chip,), init_t0),
-        "log_p_cloud": jnp.full((n_chip,), init_log_p_cloud),
+        "T0": jnp.full(atmosphere_shape, init_t0),
+        "log_p_cloud": jnp.full(atmosphere_shape, init_log_p_cloud),
         "log_w": jnp.zeros((n_chip, n_phase)),
-        "f_cloud": jnp.full((n_chip,), 0.5),
+        "f_cloud": jnp.full(atmosphere_shape, 0.5),
         "surface_scale": jnp.full((n_chip,), 0.0077),
         "sigma_d": jnp.full((n_chip,), 0.039),
         "sigma_b": 0.05,
@@ -667,9 +669,10 @@ def run_joint_free_t0_cloud_two_column_mcmc(
     fixed_v=31.2,
     fixed_q1=0.81,
     fixed_q2=0.59,
+    shared_atmosphere=False,
     progress_bar=True,
 ):
-    """Run joint multi-chip grid-based Milestone 2-4a retrieval."""
+    """Run joint multi-chip grid-based Milestone 2-4 retrieval."""
 
     from numpyro.infer import MCMC
     from doraex.inference.numpyro_models import (
@@ -707,6 +710,7 @@ def run_joint_free_t0_cloud_two_column_mcmc(
             fixed_v=fixed_v,
             fixed_q1=fixed_q1,
             fixed_q2=fixed_q2,
+            shared_atmosphere=shared_atmosphere,
         )
 
     kernel = make_joint_free_t0_cloud_nuts_kernel(
@@ -722,6 +726,7 @@ def run_joint_free_t0_cloud_two_column_mcmc(
         max_tree_depth=max_tree_depth,
         init_log_p_cloud=init_log_p_cloud,
         init_t0=init_t0,
+        shared_atmosphere=shared_atmosphere,
     )
     mcmc = MCMC(
         kernel,
@@ -869,6 +874,7 @@ def save_joint_free_t0_cloud_two_column_samples(
     sigma_b_scale=None,
     fixed_ell_b=None,
     fix_geometry=True,
+    shared_atmosphere=False,
 ):
     """Save joint multi-chip T0/cloud samples and profile metadata."""
 
@@ -893,6 +899,7 @@ def save_joint_free_t0_cloud_two_column_samples(
             ),
             "fixed_ell_b": np.asarray(np.nan if fixed_ell_b is None else fixed_ell_b),
             "fix_geometry": np.asarray(fix_geometry),
+            "shared_atmosphere": np.asarray(shared_atmosphere),
         }
     )
     np.savez(output_path, **save_data)
@@ -1051,7 +1058,8 @@ def _chip_sample(sample, chip_position):
     result = dict(sample)
     for name in ("T0", "log_p_cloud", "f_cloud", "surface_scale", "sigma_d", "log_w"):
         if name in result:
-            result[name] = jnp.asarray(result[name])[chip_position]
+            value = jnp.asarray(result[name])
+            result[name] = value if value.ndim == 0 else value[chip_position]
     return result
 
 
@@ -1455,15 +1463,26 @@ def compute_joint_free_t0_cloud_contrast_map_moments(
     contrast_variance = within + between
 
     f_cloud_stack = jnp.stack(f_cloud_values, axis=0)
-    cloud_fraction_samples = f_cloud_stack[:, :, None] + mean_stack[:, None, :]
-    cloud_fraction_mean = jnp.mean(cloud_fraction_samples, axis=0)
-    cloud_fraction_variance = (
-        jnp.mean(
-            (cloud_fraction_samples - cloud_fraction_mean[None, :, :]) ** 2,
-            axis=0,
+    if f_cloud_stack.ndim == 1:
+        cloud_fraction_samples = f_cloud_stack[:, None] + mean_stack
+        cloud_fraction_mean = jnp.mean(cloud_fraction_samples, axis=0)
+        cloud_fraction_variance = (
+            jnp.mean(
+                (cloud_fraction_samples - cloud_fraction_mean[None, :]) ** 2,
+                axis=0,
+            )
+            + within
         )
-        + within[None, :]
-    )
+    else:
+        cloud_fraction_samples = f_cloud_stack[:, :, None] + mean_stack[:, None, :]
+        cloud_fraction_mean = jnp.mean(cloud_fraction_samples, axis=0)
+        cloud_fraction_variance = (
+            jnp.mean(
+                (cloud_fraction_samples - cloud_fraction_mean[None, :, :]) ** 2,
+                axis=0,
+            )
+            + within[None, :]
+        )
     return contrast_mean, contrast_variance, cloud_fraction_mean, cloud_fraction_variance
 
 

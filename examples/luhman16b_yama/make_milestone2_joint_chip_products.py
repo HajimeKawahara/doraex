@@ -1,4 +1,4 @@
-"""Create Milestone 2-4a joint multi-chip diagnostic products."""
+"""Create Milestone 2-4 joint multi-chip diagnostic products."""
 
 import argparse
 import json
@@ -46,7 +46,7 @@ def parse_args():
     """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
-        description="Build Milestone 2-4a joint multi-chip products."
+        description="Build Milestone 2-4 joint multi-chip products."
     )
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument("--chip-indices", type=parse_chips, default=parse_chips("0,1,2,3"))
@@ -55,13 +55,33 @@ def parse_args():
         default=str(ROOT / "results" / "milestone2_4a" / "mcmc_joint_chips_free_t0_cloud.npz"),
     )
     parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_4a"))
+    parser.add_argument(
+        "--m2-4b",
+        action="store_true",
+        help="Use Milestone 2-4b shared-atmosphere defaults.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--max-map-samples", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.m2_4b:
+        default_samples = str(
+            ROOT / "results" / "milestone2_4a" / "mcmc_joint_chips_free_t0_cloud.npz"
+        )
+        default_out = str(ROOT / "results" / "milestone2_4a")
+        if args.samples == default_samples:
+            args.samples = str(
+                ROOT
+                / "results"
+                / "milestone2_4b"
+                / "mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz"
+            )
+        if args.out_dir == default_out:
+            args.out_dir = str(ROOT / "results" / "milestone2_4b")
+    return args
 
 
 def _load_chip_data_list(args):
@@ -79,6 +99,11 @@ def _load_chip_data_list(args):
 
 
 def _write_joint_diagnostics(path, samples, residuals, contrast_mean, cloud_fraction_mean):
+    cloud_fraction_mean = np.asarray(cloud_fraction_mean)
+    if cloud_fraction_mean.ndim == 1:
+        cloud_rows = [cloud_fraction_mean]
+    else:
+        cloud_rows = [row for row in cloud_fraction_mean]
     diagnostics = {
         "chip_indices": [int(value) for value in np.asarray(samples["chip_indices"])],
         "residual_rms_by_chip": [
@@ -91,24 +116,29 @@ def _write_joint_diagnostics(path, samples, residuals, contrast_mean, cloud_frac
         "contrast_mean_max": float(np.max(contrast_mean)),
         "contrast_mean_std": float(np.std(contrast_mean)),
         "cloud_fraction_mean_min_by_chip": [
-            float(np.min(row)) for row in np.asarray(cloud_fraction_mean)
+            float(np.min(row)) for row in cloud_rows
         ],
         "cloud_fraction_mean_max_by_chip": [
-            float(np.max(row)) for row in np.asarray(cloud_fraction_mean)
+            float(np.max(row)) for row in cloud_rows
         ],
     }
     for name in ("T0", "log_p_cloud", "f_cloud", "sigma_d", "surface_scale"):
         if name in samples:
             values = np.asarray(samples[name], dtype=float)
-            diagnostics[f"{name}_median_by_chip"] = [
-                float(value) for value in np.median(values, axis=0)
-            ]
-            diagnostics[f"{name}_q05_by_chip"] = [
-                float(value) for value in np.quantile(values, 0.05, axis=0)
-            ]
-            diagnostics[f"{name}_q95_by_chip"] = [
-                float(value) for value in np.quantile(values, 0.95, axis=0)
-            ]
+            if values.ndim == 1:
+                diagnostics[f"{name}_median"] = float(np.median(values))
+                diagnostics[f"{name}_q05"] = float(np.quantile(values, 0.05))
+                diagnostics[f"{name}_q95"] = float(np.quantile(values, 0.95))
+            else:
+                diagnostics[f"{name}_median_by_chip"] = [
+                    float(value) for value in np.median(values, axis=0)
+                ]
+                diagnostics[f"{name}_q05_by_chip"] = [
+                    float(value) for value in np.quantile(values, 0.05, axis=0)
+                ]
+                diagnostics[f"{name}_q95_by_chip"] = [
+                    float(value) for value in np.quantile(values, 0.95, axis=0)
+                ]
     for name in ("sigma_b", "ell_b"):
         if name in samples:
             values = np.asarray(samples[name], dtype=float)
@@ -151,6 +181,12 @@ def main():
     contrast_var = np.asarray(contrast_var)
     cloud_mean = np.asarray(cloud_mean)
     cloud_var = np.asarray(cloud_var)
+    if cloud_mean.ndim == 1:
+        cloud_mean_by_chip = np.tile(cloud_mean[None, :], (len(chip_data_list), 1))
+        cloud_var_by_chip = np.tile(cloud_var[None, :], (len(chip_data_list), 1))
+    else:
+        cloud_mean_by_chip = cloud_mean
+        cloud_var_by_chip = cloud_var
 
     models, median_sample, chip_samples = reconstruct_joint_free_t0_cloud_two_column_timeseries(
         chip_data_list,
@@ -166,12 +202,18 @@ def main():
 
     np.save(out_dir / "contrast_mean_joint.npy", contrast_mean)
     np.save(out_dir / "contrast_var_joint.npy", contrast_var)
-    np.save(out_dir / "cloud_fraction_mean_joint_by_chip.npy", cloud_mean)
-    np.save(out_dir / "cloud_fraction_var_joint_by_chip.npy", cloud_var)
+    np.save(out_dir / "cloud_fraction_mean_joint_by_chip.npy", cloud_mean_by_chip)
+    np.save(out_dir / "cloud_fraction_var_joint_by_chip.npy", cloud_var_by_chip)
     for chip_position, chip_data in enumerate(chip_data_list):
         chip_index = chip_data.chip_index
-        np.save(out_dir / f"cloud_fraction_mean_chip{chip_index}.npy", cloud_mean[chip_position])
-        np.save(out_dir / f"cloud_fraction_var_chip{chip_index}.npy", cloud_var[chip_position])
+        np.save(
+            out_dir / f"cloud_fraction_mean_chip{chip_index}.npy",
+            cloud_mean_by_chip[chip_position],
+        )
+        np.save(
+            out_dir / f"cloud_fraction_var_chip{chip_index}.npy",
+            cloud_var_by_chip[chip_position],
+        )
         np.save(out_dir / f"model_spectrum_chip{chip_index}.npy", np.asarray(models[chip_position]))
         np.save(out_dir / f"residual_chip{chip_index}.npy", residuals[chip_position])
 
@@ -195,8 +237,8 @@ def main():
         np.save(out_dir / f"delta_s_mean_chip{chip_index}.npy", delta_s_mean)
         np.save(out_dir / f"delta_s_var_chip{chip_index}.npy", delta_s_var)
         _plot_cloud_fraction(
-            cloud_mean[chip_position],
-            np.sqrt(cloud_var[chip_position]),
+            cloud_mean_by_chip[chip_position],
+            np.sqrt(cloud_var_by_chip[chip_position]),
             out_dir / f"figure8_cloud_fraction_chip{chip_index}.png",
         )
         _plot_delta_s(
@@ -213,8 +255,8 @@ def main():
         )
         _write_cloud_fraction_diagnostics(
             out_dir / f"cloud_fraction_diagnostics_chip{chip_index}.json",
-            cloud_mean[chip_position],
-            np.sqrt(cloud_var[chip_position]),
+            cloud_mean_by_chip[chip_position],
+            np.sqrt(cloud_var_by_chip[chip_position]),
             contrast_mean,
         )
 
@@ -228,7 +270,7 @@ def main():
         samples,
         residuals,
         contrast_mean,
-        cloud_mean,
+        cloud_mean_by_chip,
     )
     print(f"Joint products saved to {out_dir}")
 

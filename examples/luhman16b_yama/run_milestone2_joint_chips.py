@@ -1,4 +1,4 @@
-"""Run Milestone 2-4a joint multi-chip retrieval."""
+"""Run Milestone 2-4 joint multi-chip retrievals."""
 
 import argparse
 from pathlib import Path
@@ -32,7 +32,7 @@ def parse_args():
     """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
-        description="Run joint multi-chip Milestone 2-4a retrieval."
+        description="Run joint multi-chip Milestone 2-4 retrieval."
     )
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument("--chip-indices", type=parse_chips, default=parse_chips("0,1,2,3"))
@@ -41,6 +41,11 @@ def parse_args():
         default=str(ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip{chip}.npz"),
     )
     parser.add_argument("--out-dir", default=str(ROOT / "results" / "milestone2_4a"))
+    parser.add_argument(
+        "--m2-4b",
+        action="store_true",
+        help="Use shared T0, log10 Pc, and f_cloud defaults for Milestone 2-4b.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--num-warmup", type=int, default=2000)
     parser.add_argument("--num-samples", type=int, default=1500)
@@ -64,6 +69,11 @@ def parse_args():
         help="Sample shared ell_b instead of using --fix-ell-b.",
     )
     parser.add_argument(
+        "--shared-atmosphere",
+        action="store_true",
+        help="Share T0, log10 Pc, and f_cloud across chips.",
+    )
+    parser.add_argument(
         "--fix-geometry-to-milestone1",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -81,7 +91,13 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.m2_4b:
+        args.shared_atmosphere = True
+        default_m24a_out = str(ROOT / "results" / "milestone2_4a")
+        if args.out_dir == default_m24a_out:
+            args.out_dir = str(ROOT / "results" / "milestone2_4b")
+    return args
 
 
 def main():
@@ -145,13 +161,17 @@ def main():
         fixed_v=args.fixed_v,
         fixed_q1=args.fixed_q1,
         fixed_q2=args.fixed_q2,
+        shared_atmosphere=args.shared_atmosphere,
     )
     if args.print_summary:
         mcmc.print_summary()
 
     out_dir = Path(args.out_dir)
     suffix = "_smoke" if args.smoke_test else ""
-    output_path = out_dir / f"mcmc_joint_chips_free_t0_cloud{suffix}.npz"
+    atmosphere_suffix = "_shared_atmosphere" if args.shared_atmosphere else ""
+    output_path = (
+        out_dir / f"mcmc_joint_chips_free_t0_cloud{atmosphere_suffix}{suffix}.npz"
+    )
     save_joint_free_t0_cloud_two_column_samples(
         output_path,
         mcmc.get_samples(),
@@ -167,6 +187,7 @@ def main():
         sigma_b_scale=args.sigma_b_scale,
         fixed_ell_b=fixed_ell_b,
         fix_geometry=args.fix_geometry_to_milestone1,
+        shared_atmosphere=args.shared_atmosphere,
     )
     print(f"Samples saved to {output_path}")
 

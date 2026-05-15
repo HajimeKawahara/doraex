@@ -526,13 +526,17 @@ def joint_free_t0_cloud_two_column_doppler_model(
     fixed_v=31.2,
     fixed_q1=0.81,
     fixed_q2=0.59,
+    shared_atmosphere=False,
     gp_jitter=0.5e-6,
     noise_jitter=1.0e-6,
 ):
     """Joint multi-chip retrieval with a shared contrast map.
 
-    Atmospheric and nuisance parameters are chip-specific, while the cloud
-    contrast map and its GP hyperparameters are shared across chips.
+    By default the atmospheric parameters and nuisance parameters are
+    chip-specific, while the cloud contrast map and its GP hyperparameters are
+    shared across chips. Set ``shared_atmosphere`` to share ``T0``,
+    ``log_p_cloud``, and ``f_cloud`` across chips while keeping chip-local
+    calibration and noise parameters.
     """
 
     n_chip = data.shape[0]
@@ -560,18 +564,26 @@ def joint_free_t0_cloud_two_column_doppler_model(
     else:
         raise ValueError("period_mode must be 'sampled' or 'fixed'")
 
-    t0 = numpyro.sample(
-        "T0",
-        dist.Uniform(t0_bounds[0], t0_bounds[1]).expand([n_chip]),
-    )
-    log_p_cloud = numpyro.sample(
-        "log_p_cloud",
-        dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]).expand([n_chip]),
-    )
-    mean_cloud_fraction = numpyro.sample(
-        "f_cloud",
-        dist.Uniform(0.0, 1.0).expand([n_chip]),
-    )
+    if shared_atmosphere:
+        t0 = numpyro.sample("T0", dist.Uniform(t0_bounds[0], t0_bounds[1]))
+        log_p_cloud = numpyro.sample(
+            "log_p_cloud",
+            dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]),
+        )
+        mean_cloud_fraction = numpyro.sample("f_cloud", dist.Uniform(0.0, 1.0))
+    else:
+        t0 = numpyro.sample(
+            "T0",
+            dist.Uniform(t0_bounds[0], t0_bounds[1]).expand([n_chip]),
+        )
+        log_p_cloud = numpyro.sample(
+            "log_p_cloud",
+            dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]).expand([n_chip]),
+        )
+        mean_cloud_fraction = numpyro.sample(
+            "f_cloud",
+            dist.Uniform(0.0, 1.0).expand([n_chip]),
+        )
     surface_scale = numpyro.sample(
         "surface_scale",
         dist.LogNormal(
@@ -592,17 +604,26 @@ def joint_free_t0_cloud_two_column_doppler_model(
     contrast_matrices = []
     noise_variances = []
     for chip_index in range(n_chip):
+        t0_chip = t0 if shared_atmosphere else t0[chip_index]
+        log_p_cloud_chip = (
+            log_p_cloud if shared_atmosphere else log_p_cloud[chip_index]
+        )
+        mean_cloud_fraction_chip = (
+            mean_cloud_fraction
+            if shared_atmosphere
+            else mean_cloud_fraction[chip_index]
+        )
         clear_profile = _interpolate_profile_grid(
             t0_grid[chip_index],
             clear_profile_grid[chip_index],
-            t0[chip_index],
+            t0_chip,
         )
         cloudy_profile = _interpolate_profile_grid_2d(
             t0_grid[chip_index],
             log_p_cloud_grid[chip_index],
             cloudy_profile_grid[chip_index],
-            t0[chip_index],
-            log_p_cloud[chip_index],
+            t0_chip,
+            log_p_cloud_chip,
         )
         baseline, contrast_matrix = two_column_operator_from_times(
             theta,
@@ -616,7 +637,7 @@ def joint_free_t0_cloud_two_column_doppler_model(
             wavelengths[chip_index],
             clear_profile,
             cloudy_profile,
-            mean_cloud_fraction[chip_index],
+            mean_cloud_fraction_chip,
             weights=jnp.exp(log_w[chip_index]),
             pixel_area=pixel_area,
         )
