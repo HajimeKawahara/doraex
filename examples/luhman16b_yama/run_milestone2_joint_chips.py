@@ -46,6 +46,11 @@ def parse_args():
         action="store_true",
         help="Use shared T0, log10 Pc, and f_cloud defaults for Milestone 2-4b.",
     )
+    parser.add_argument(
+        "--m2-4c",
+        action="store_true",
+        help="Use M2-4b shared atmosphere with ExoMol-consistent fixed grids.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--num-warmup", type=int, default=2000)
     parser.add_argument("--num-samples", type=int, default=1500)
@@ -92,11 +97,24 @@ def parse_args():
         default=True,
     )
     args = parser.parse_args()
-    if args.m2_4b:
+    if args.m2_4b or args.m2_4c:
         args.shared_atmosphere = True
         default_m24a_out = str(ROOT / "results" / "milestone2_4a")
         if args.out_dir == default_m24a_out:
-            args.out_dir = str(ROOT / "results" / "milestone2_4b")
+            milestone = "milestone2_4c" if args.m2_4c else "milestone2_4b"
+            args.out_dir = str(ROOT / "results" / milestone)
+    if args.m2_4c:
+        default_template = str(
+            ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip{chip}.npz"
+        )
+        if args.profile_grid_template == default_template:
+            args.profile_grid_template = str(
+                ROOT / "data" / "milestone2_t0_cloud_grid_profiles_exomol_chip{chip}.npz"
+            )
+        if args.init_t0 == 1215.0:
+            args.init_t0 = 1219.0
+        if args.init_log_p_cloud == 1.28:
+            args.init_log_p_cloud = 1.45
     return args
 
 

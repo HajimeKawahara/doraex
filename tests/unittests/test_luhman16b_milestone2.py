@@ -395,6 +395,10 @@ def test_chip_aware_milestone2_default_paths():
         == "milestone2_t0_cloud_grid_profiles_chip1.npz"
     )
     assert (
+        module.t0_cloud_grid_path(1, atmosphere_tag="exomol").name
+        == "milestone2_t0_cloud_grid_profiles_exomol_chip1.npz"
+    )
+    assert (
         module.free_t0_cloud_sample_path("results/m2", 2, "fixed").name
         == "mcmc_chip2_fixed_free_t0_cloud.npz"
     )

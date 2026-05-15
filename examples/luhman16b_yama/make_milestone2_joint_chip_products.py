@@ -60,6 +60,11 @@ def parse_args():
         action="store_true",
         help="Use Milestone 2-4b shared-atmosphere defaults.",
     )
+    parser.add_argument(
+        "--m2-4c",
+        action="store_true",
+        help="Use Milestone 2-4c ExoMol-consistent shared-atmosphere defaults.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--max-map-samples", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
@@ -72,20 +77,21 @@ def parse_args():
     )
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
-    if args.m2_4b:
+    if args.m2_4b or args.m2_4c:
         default_samples = str(
             ROOT / "results" / "milestone2_4a" / "mcmc_joint_chips_free_t0_cloud.npz"
         )
         default_out = str(ROOT / "results" / "milestone2_4a")
+        milestone = "milestone2_4c" if args.m2_4c else "milestone2_4b"
         if args.samples == default_samples:
             args.samples = str(
                 ROOT
                 / "results"
-                / "milestone2_4b"
+                / milestone
                 / "mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz"
             )
         if args.out_dir == default_out:
-            args.out_dir = str(ROOT / "results" / "milestone2_4b")
+            args.out_dir = str(ROOT / "results" / milestone)
     return args
 
 

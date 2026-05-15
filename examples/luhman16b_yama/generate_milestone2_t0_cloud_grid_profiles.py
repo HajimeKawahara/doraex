@@ -25,6 +25,19 @@ from doraex.spectra.exojax_forward import (  # noqa: E402
 from chip_paths import t0_cloud_grid_path  # noqa: E402
 
 
+YAMA_L16B_EXOMOL_ATMOSPHERE = FixedPowerLawAtmosphere(
+    t0=1219.0,
+    alpha=0.129,
+    logg=4.97,
+    log_vmr_co=-2.96,
+    log_vmr_h2o=-3.25,
+    log_vmr_ch4=-4.65,
+    log_vmr_hf=-7.08,
+    rv=25.66,
+    log_p_cloud=1.45,
+)
+
+
 def parse_args():
     """Parse command-line arguments."""
 
@@ -39,6 +52,11 @@ def parse_args():
         help="Output NPZ path. Defaults to data/milestone2_t0_cloud_grid_profiles_chip{N}.npz.",
     )
     parser.add_argument("--chip-index", type=int, default=1)
+    parser.add_argument(
+        "--m2-4c",
+        action="store_true",
+        help="Use Yama Luhman 16B ExoMol fixed-atmosphere defaults.",
+    )
     parser.add_argument(
         "--opacity-cache-dir",
         default=str(ROOT / "data" / "opacities" / "luhman16b_powerlaw"),
@@ -57,7 +75,8 @@ def parse_args():
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.out is None:
-        args.out = str(t0_cloud_grid_path(args.chip_index))
+        atmosphere_tag = "exomol" if args.m2_4c else None
+        args.out = str(t0_cloud_grid_path(args.chip_index, atmosphere_tag=atmosphere_tag))
     return args
 
 
@@ -104,7 +123,9 @@ def main():
         )
         metadata = {"profile_source": "synthetic_smoke_t0_cloud_grid"}
     else:
-        base_parameters = FixedPowerLawAtmosphere()
+        base_parameters = (
+            YAMA_L16B_EXOMOL_ATMOSPHERE if args.m2_4c else FixedPowerLawAtmosphere()
+        )
         model = Luhman16BPowerLawColumnModel(
             chip_data.wavelengths,
             molecule_paths=_molecule_paths(args.database_dir),
@@ -131,8 +152,17 @@ def main():
         cloudy_profile_grid = np.asarray(cloudy_profiles)
         metadata = {
             "profile_source": "exojax_powerlaw_t0_cloud_grid",
+            "atmosphere_preset": (
+                "yama_luhman16b_exomol" if args.m2_4c else "default_hitemp_h2_median"
+            ),
             "alpha": base_parameters.alpha,
             "logg": base_parameters.logg,
+            "log_vmr_co": base_parameters.log_vmr_co,
+            "log_vmr_h2o": base_parameters.log_vmr_h2o,
+            "log_vmr_ch4": base_parameters.log_vmr_ch4,
+            "log_vmr_hf": base_parameters.log_vmr_hf,
+            "rv": base_parameters.rv,
+            "reference_log_p_cloud": base_parameters.log_p_cloud,
             "cloud_width": base_parameters.cloud_width,
             "cloud_column_optical_depth": base_parameters.cloud_column_optical_depth,
         }

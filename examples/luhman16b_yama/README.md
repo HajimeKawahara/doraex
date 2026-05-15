@@ -546,3 +546,63 @@ python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
 The `--m2-4b` preset writes samples to
 `results/milestone2_4b/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`
 and products to `results/milestone2_4b`.
+
+## Milestone 2-4c
+
+Milestone 2-4c repeats the Milestone 2-4b shared-atmosphere retrieval, but
+regenerates the T0/cloud profile grids with fixed atmospheric parameters
+matched to the Yama et al. Luhman 16B power-law ExoMol CO posterior medians.
+This keeps the ExoMol opacity grids and fixed VMR/logg/RV assumptions
+internally consistent.
+
+Generate the ExoMol-consistent T0/cloud grids for all chips:
+
+```bash
+for chip in 0 1 2 3; do
+  python examples/luhman16b_yama/generate_milestone2_t0_cloud_grid_profiles.py \
+    --m2-4c \
+    --chip-index ${chip} \
+    --opacity-cache-dir data/opacities/luhman16b_powerlaw \
+    --database-dir ~/data_mol/.database \
+    --t0-min 1000 \
+    --t0-max 1700 \
+    --t0-count 15 \
+    --log-p-cloud-min -2.0 \
+    --log-p-cloud-max 2.0 \
+    --log-p-cloud-count 33
+done
+```
+
+Run the ExoMol-consistent shared-atmosphere joint retrieval:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_joint_chips.py \
+  --m2-4c \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.98 \
+  --max-tree-depth 11 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+Build the M2-4c joint products:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
+  --m2-4c \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --cloud-fraction-cmap afmhot \
+  --max-map-samples 1000
+```
+
+The `--m2-4c` preset reads profile grids named
+`data/milestone2_t0_cloud_grid_profiles_exomol_chip{chip}.npz`, writes samples
+to `results/milestone2_4c/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`,
+and writes products to `results/milestone2_4c`.

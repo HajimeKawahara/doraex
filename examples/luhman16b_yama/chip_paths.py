@@ -19,10 +19,11 @@ def cloud_grid_path(chip_index, wide=False):
     return ROOT / "data" / f"milestone2_cloud_grid_profiles{suffix}_chip{chip_index}.npz"
 
 
-def t0_cloud_grid_path(chip_index):
+def t0_cloud_grid_path(chip_index, atmosphere_tag=None):
     """Return the default T0/cloud-profile grid path for a chip."""
 
-    return ROOT / "data" / f"milestone2_t0_cloud_grid_profiles_chip{chip_index}.npz"
+    suffix = "" if atmosphere_tag is None else f"_{atmosphere_tag}"
+    return ROOT / "data" / f"milestone2_t0_cloud_grid_profiles{suffix}_chip{chip_index}.npz"
 
 
 def fixed_sample_path(out_dir, chip_index, period_mode):
