@@ -505,3 +505,42 @@ The main shared-map products are `contrast_mean_joint.npy`,
 `contrast_var_joint.npy`, and `figure8_shared_contrast_joint.png`. Per-chip
 cloud-fraction maps, residuals, and Figure 9 panels are also written so the
 joint fit can be checked chip by chip.
+
+## Milestone 2-4b
+
+Milestone 2-4b keeps the Milestone 2-4a shared contrast map, but also shares
+the atmospheric parameters `T0`, `log_p_cloud`, and `f_cloud` across chips.
+Chip-local calibration and noise terms (`log_w`, `surface_scale`, `sigma_d`)
+remain chip-specific.
+
+Run the shared-atmosphere joint retrieval:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_joint_chips.py \
+  --m2-4b \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.98 \
+  --max-tree-depth 11 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+Build the shared-atmosphere joint products:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
+  --m2-4b \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --max-map-samples 1000
+```
+
+The `--m2-4b` preset writes samples to
+`results/milestone2_4b/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`
+and products to `results/milestone2_4b`.
