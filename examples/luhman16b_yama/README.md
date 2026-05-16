@@ -606,3 +606,51 @@ The `--m2-4c` preset reads profile grids named
 `data/milestone2_t0_cloud_grid_profiles_exomol_chip{chip}.npz`, writes samples
 to `results/milestone2_4c/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`,
 and writes products to `results/milestone2_4c`.
+
+## Milestone 2-4d
+
+Milestone 2-4d uses the Milestone 2-4c ExoMol-consistent profile grids, but
+replaces the legacy `surface_scale` amplitude with the Yama et al.
+per-segment normalization,
+
+```text
+f_i = F_i / (A_i mean(F_i)).
+```
+
+In the Doppler-imaging linearization, both the uniform baseline spectrum and
+the cloud-contrast matrix are divided by `A_i` times the mean baseline flux
+for each chip. The `A_i` parameters are sampled with the Yama prior
+`U(1.0, 1.2)`.
+
+Run the Yama-normalized shared-atmosphere joint retrieval:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_joint_chips.py \
+  --m2-4d \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.98 \
+  --max-tree-depth 11 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+Build the M2-4d joint products:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
+  --m2-4d \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --cloud-fraction-cmap afmhot \
+  --max-map-samples 1000
+```
+
+The `--m2-4d` preset reads the M2-4c ExoMol grids, writes samples to
+`results/milestone2_4d/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`,
+and writes products to `results/milestone2_4d`.

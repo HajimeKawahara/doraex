@@ -65,6 +65,11 @@ def parse_args():
         action="store_true",
         help="Use Milestone 2-4c ExoMol-consistent shared-atmosphere defaults.",
     )
+    parser.add_argument(
+        "--m2-4d",
+        action="store_true",
+        help="Use Milestone 2-4d Yama-normalized shared-atmosphere defaults.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--max-map-samples", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
@@ -77,12 +82,17 @@ def parse_args():
     )
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
-    if args.m2_4b or args.m2_4c:
+    if args.m2_4b or args.m2_4c or args.m2_4d:
         default_samples = str(
             ROOT / "results" / "milestone2_4a" / "mcmc_joint_chips_free_t0_cloud.npz"
         )
         default_out = str(ROOT / "results" / "milestone2_4a")
-        milestone = "milestone2_4c" if args.m2_4c else "milestone2_4b"
+        if args.m2_4d:
+            milestone = "milestone2_4d"
+        elif args.m2_4c:
+            milestone = "milestone2_4c"
+        else:
+            milestone = "milestone2_4b"
         if args.samples == default_samples:
             args.samples = str(
                 ROOT
@@ -133,7 +143,7 @@ def _write_joint_diagnostics(path, samples, residuals, contrast_mean, cloud_frac
             float(np.max(row)) for row in cloud_rows
         ],
     }
-    for name in ("T0", "log_p_cloud", "f_cloud", "sigma_d", "surface_scale"):
+    for name in ("T0", "log_p_cloud", "f_cloud", "sigma_d", "surface_scale", "A"):
         if name in samples:
             values = np.asarray(samples[name], dtype=float)
             if values.ndim == 1:

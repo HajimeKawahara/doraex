@@ -527,6 +527,7 @@ def joint_free_t0_cloud_two_column_doppler_model(
     fixed_q1=0.81,
     fixed_q2=0.59,
     shared_atmosphere=False,
+    normalization_mode="surface_scale",
     gp_jitter=0.5e-6,
     noise_jitter=1.0e-6,
 ):
@@ -536,11 +537,16 @@ def joint_free_t0_cloud_two_column_doppler_model(
     chip-specific, while the cloud contrast map and its GP hyperparameters are
     shared across chips. Set ``shared_atmosphere`` to share ``T0``,
     ``log_p_cloud``, and ``f_cloud`` across chips while keeping chip-local
-    calibration and noise parameters.
+    calibration and noise parameters. The default normalization samples the
+    legacy ``surface_scale`` amplitude; ``normalization_mode="yama"`` instead
+    uses per-chip normalized spectra ``F_i / (A_i mean(F_i))`` following
+    Yama et al.
     """
 
     n_chip = data.shape[0]
     n_phase = data.shape[1]
+    if normalization_mode not in ("surface_scale", "yama"):
+        raise ValueError("normalization_mode must be 'surface_scale' or 'yama'")
 
     if fix_geometry:
         cosi = numpyro.deterministic("cosi", jnp.asarray(fixed_cosi))
@@ -584,13 +590,21 @@ def joint_free_t0_cloud_two_column_doppler_model(
             "f_cloud",
             dist.Uniform(0.0, 1.0).expand([n_chip]),
         )
-    surface_scale = numpyro.sample(
-        "surface_scale",
-        dist.LogNormal(
-            jnp.log(surface_scale_location),
-            surface_scale_scale,
-        ).expand([n_chip]),
-    )
+    if normalization_mode == "surface_scale":
+        surface_scale = numpyro.sample(
+            "surface_scale",
+            dist.LogNormal(
+                jnp.log(surface_scale_location),
+                surface_scale_scale,
+            ).expand([n_chip]),
+        )
+        normalization_factor = None
+    else:
+        surface_scale = None
+        normalization_factor = numpyro.sample(
+            "A",
+            dist.Uniform(1.0, 1.2).expand([n_chip]),
+        )
     log_w = numpyro.sample(
         "log_w",
         dist.Normal(0.0, log_w_scale).expand([n_chip, n_phase]),
@@ -641,8 +655,13 @@ def joint_free_t0_cloud_two_column_doppler_model(
             weights=jnp.exp(log_w[chip_index]),
             pixel_area=pixel_area,
         )
-        baseline = surface_scale[chip_index] * baseline
-        contrast_matrix = surface_scale[chip_index] * contrast_matrix
+        if normalization_mode == "surface_scale":
+            baseline = surface_scale[chip_index] * baseline
+            contrast_matrix = surface_scale[chip_index] * contrast_matrix
+        else:
+            norm = normalization_factor[chip_index] * jnp.mean(baseline)
+            baseline = baseline / norm
+            contrast_matrix = contrast_matrix / norm
         baselines.append(baseline)
         contrast_matrices.append(contrast_matrix)
         noise_variances.append(

@@ -610,6 +610,7 @@ def make_joint_free_t0_cloud_nuts_kernel(
     init_log_p_cloud=1.28,
     init_t0=1215.0,
     shared_atmosphere=False,
+    normalization_mode="surface_scale",
 ):
     """Create a NUTS kernel for joint multi-chip Milestone 2-4 runs."""
 
@@ -621,10 +622,15 @@ def make_joint_free_t0_cloud_nuts_kernel(
         "log_p_cloud": jnp.full(atmosphere_shape, init_log_p_cloud),
         "log_w": jnp.zeros((n_chip, n_phase)),
         "f_cloud": jnp.full(atmosphere_shape, 0.5),
-        "surface_scale": jnp.full((n_chip,), 0.0077),
         "sigma_d": jnp.full((n_chip,), 0.039),
         "sigma_b": 0.05,
     }
+    if normalization_mode == "surface_scale":
+        init_values["surface_scale"] = jnp.full((n_chip,), 0.0077)
+    elif normalization_mode == "yama":
+        init_values["A"] = jnp.full((n_chip,), 1.1)
+    else:
+        raise ValueError("normalization_mode must be 'surface_scale' or 'yama'")
     if not fix_geometry:
         init_values.update({"cosi": 0.485, "v": 31.2, "q1": 0.81, "q2": 0.59})
     if fixed_ell_b is None:
@@ -670,6 +676,7 @@ def run_joint_free_t0_cloud_two_column_mcmc(
     fixed_q1=0.81,
     fixed_q2=0.59,
     shared_atmosphere=False,
+    normalization_mode="surface_scale",
     progress_bar=True,
 ):
     """Run joint multi-chip grid-based Milestone 2-4 retrieval."""
@@ -711,6 +718,7 @@ def run_joint_free_t0_cloud_two_column_mcmc(
             fixed_q1=fixed_q1,
             fixed_q2=fixed_q2,
             shared_atmosphere=shared_atmosphere,
+            normalization_mode=normalization_mode,
         )
 
     kernel = make_joint_free_t0_cloud_nuts_kernel(
@@ -727,6 +735,7 @@ def run_joint_free_t0_cloud_two_column_mcmc(
         init_log_p_cloud=init_log_p_cloud,
         init_t0=init_t0,
         shared_atmosphere=shared_atmosphere,
+        normalization_mode=normalization_mode,
     )
     mcmc = MCMC(
         kernel,
@@ -875,6 +884,7 @@ def save_joint_free_t0_cloud_two_column_samples(
     fixed_ell_b=None,
     fix_geometry=True,
     shared_atmosphere=False,
+    normalization_mode="surface_scale",
 ):
     """Save joint multi-chip T0/cloud samples and profile metadata."""
 
@@ -900,6 +910,7 @@ def save_joint_free_t0_cloud_two_column_samples(
             "fixed_ell_b": np.asarray(np.nan if fixed_ell_b is None else fixed_ell_b),
             "fix_geometry": np.asarray(fix_geometry),
             "shared_atmosphere": np.asarray(shared_atmosphere),
+            "normalization_mode": np.asarray(normalization_mode),
         }
     )
     np.savez(output_path, **save_data)
@@ -950,6 +961,7 @@ def _fixed_sample_at(samples, index):
         "log_w",
         "f_cloud",
         "surface_scale",
+        "A",
         "sigma_d",
         "sigma_b",
         "ell_b",
@@ -992,6 +1004,9 @@ def two_column_operator_from_sample(
         jnp.asarray(sample["f_cloud"]),
         weights=weights,
     )
+    if "A" in sample:
+        norm = jnp.asarray(sample["A"]) * jnp.mean(baseline)
+        return baseline / norm, contrast_matrix / norm
     surface_scale = jnp.asarray(sample.get("surface_scale", 1.0))
     return surface_scale * baseline, surface_scale * contrast_matrix
 
@@ -1056,7 +1071,15 @@ def _chip_sample(sample, chip_position):
     """Return a view of chip-specific sample entries for one chip."""
 
     result = dict(sample)
-    for name in ("T0", "log_p_cloud", "f_cloud", "surface_scale", "sigma_d", "log_w"):
+    for name in (
+        "T0",
+        "log_p_cloud",
+        "f_cloud",
+        "surface_scale",
+        "A",
+        "sigma_d",
+        "log_w",
+    ):
         if name in result:
             value = jnp.asarray(result[name])
             result[name] = value if value.ndim == 0 else value[chip_position]

@@ -51,6 +51,11 @@ def parse_args():
         action="store_true",
         help="Use M2-4b shared atmosphere with ExoMol-consistent fixed grids.",
     )
+    parser.add_argument(
+        "--m2-4d",
+        action="store_true",
+        help="Use M2-4c grids with Yama-style per-chip mean normalization.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--num-warmup", type=int, default=2000)
     parser.add_argument("--num-samples", type=int, default=1500)
@@ -79,6 +84,12 @@ def parse_args():
         help="Share T0, log10 Pc, and f_cloud across chips.",
     )
     parser.add_argument(
+        "--normalization-mode",
+        choices=("surface_scale", "yama"),
+        default="surface_scale",
+        help="Use legacy surface_scale or Yama-style F_i/(A_i mean(F_i)) normalization.",
+    )
+    parser.add_argument(
         "--fix-geometry-to-milestone1",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -97,13 +108,18 @@ def parse_args():
         default=True,
     )
     args = parser.parse_args()
-    if args.m2_4b or args.m2_4c:
+    if args.m2_4b or args.m2_4c or args.m2_4d:
         args.shared_atmosphere = True
         default_m24a_out = str(ROOT / "results" / "milestone2_4a")
         if args.out_dir == default_m24a_out:
-            milestone = "milestone2_4c" if args.m2_4c else "milestone2_4b"
+            if args.m2_4d:
+                milestone = "milestone2_4d"
+            elif args.m2_4c:
+                milestone = "milestone2_4c"
+            else:
+                milestone = "milestone2_4b"
             args.out_dir = str(ROOT / "results" / milestone)
-    if args.m2_4c:
+    if args.m2_4c or args.m2_4d:
         default_template = str(
             ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip{chip}.npz"
         )
@@ -115,6 +131,8 @@ def parse_args():
             args.init_t0 = 1219.0
         if args.init_log_p_cloud == 1.28:
             args.init_log_p_cloud = 1.45
+    if args.m2_4d:
+        args.normalization_mode = "yama"
     return args
 
 
@@ -180,6 +198,7 @@ def main():
         fixed_q1=args.fixed_q1,
         fixed_q2=args.fixed_q2,
         shared_atmosphere=args.shared_atmosphere,
+        normalization_mode=args.normalization_mode,
     )
     if args.print_summary:
         mcmc.print_summary()
@@ -206,6 +225,7 @@ def main():
         fixed_ell_b=fixed_ell_b,
         fix_geometry=args.fix_geometry_to_milestone1,
         shared_atmosphere=args.shared_atmosphere,
+        normalization_mode=args.normalization_mode,
     )
     print(f"Samples saved to {output_path}")
 
