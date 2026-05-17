@@ -20,9 +20,10 @@ from doraex.spectra.exojax_forward import (  # noqa: E402
     FixedPowerLawAtmosphere,
     Luhman16BPowerLawColumnModel,
     save_t0_cloud_profile_grid,
+    save_t0_vmr_cloud_profile_grid,
     synthetic_t0_cloud_profile_grid,
 )
-from chip_paths import t0_cloud_grid_path  # noqa: E402
+from chip_paths import t0_cloud_grid_path, t0_vmr_cloud_grid_path  # noqa: E402
 
 
 YAMA_L16B_EXOMOL_ATMOSPHERE = FixedPowerLawAtmosphere(
@@ -58,6 +59,11 @@ def parse_args():
         help="Use Yama Luhman 16B ExoMol fixed-atmosphere defaults.",
     )
     parser.add_argument(
+        "--m2-5a",
+        action="store_true",
+        help="Generate a T0/log10 Pc/zeta_vmr grid for M2-5a.",
+    )
+    parser.add_argument(
         "--opacity-cache-dir",
         default=str(ROOT / "data" / "opacities" / "luhman16b_powerlaw"),
     )
@@ -69,14 +75,22 @@ def parse_args():
     parser.add_argument("--log-p-cloud-min", type=float, default=-2.0)
     parser.add_argument("--log-p-cloud-max", type=float, default=2.0)
     parser.add_argument("--log-p-cloud-count", type=int, default=33)
+    parser.add_argument("--zeta-vmr-min", type=float, default=-0.5)
+    parser.add_argument("--zeta-vmr-max", type=float, default=0.5)
+    parser.add_argument("--zeta-vmr-count", type=int, default=9)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.out is None:
-        atmosphere_tag = "exomol" if args.m2_4c else None
-        args.out = str(t0_cloud_grid_path(args.chip_index, atmosphere_tag=atmosphere_tag))
+        atmosphere_tag = "exomol" if args.m2_4c or args.m2_5a else None
+        if args.m2_5a:
+            args.out = str(
+                t0_vmr_cloud_grid_path(args.chip_index, atmosphere_tag=atmosphere_tag)
+            )
+        else:
+            args.out = str(t0_cloud_grid_path(args.chip_index, atmosphere_tag=atmosphere_tag))
     return args
 
 
@@ -109,6 +123,11 @@ def main():
         args.log_p_cloud_max,
         args.log_p_cloud_count,
     )
+    zeta_vmr_grid = np.linspace(
+        args.zeta_vmr_min,
+        args.zeta_vmr_max,
+        args.zeta_vmr_count,
+    )
     chip_data = load_luhman16b_chip(args.data_dir, chip_index=args.chip_index)
     if args.smoke_test:
         chip_data = subset_chip_data(
@@ -121,10 +140,25 @@ def main():
             t0_grid,
             log_p_cloud_grid,
         )
-        metadata = {"profile_source": "synthetic_smoke_t0_cloud_grid"}
+        if args.m2_5a:
+            clear_profile_grid = np.repeat(
+                clear_profile_grid[:, None, :],
+                len(zeta_vmr_grid),
+                axis=1,
+            )
+            cloudy_profile_grid = np.repeat(
+                cloudy_profile_grid[:, :, None, :],
+                len(zeta_vmr_grid),
+                axis=2,
+            )
+            metadata = {"profile_source": "synthetic_smoke_t0_vmr_cloud_grid"}
+        else:
+            metadata = {"profile_source": "synthetic_smoke_t0_cloud_grid"}
     else:
         base_parameters = (
-            YAMA_L16B_EXOMOL_ATMOSPHERE if args.m2_4c else FixedPowerLawAtmosphere()
+            YAMA_L16B_EXOMOL_ATMOSPHERE
+            if args.m2_4c or args.m2_5a
+            else FixedPowerLawAtmosphere()
         )
         model = Luhman16BPowerLawColumnModel(
             chip_data.wavelengths,
@@ -137,23 +171,58 @@ def main():
         clear_profiles = []
         cloudy_profiles = []
         for t0 in t0_grid:
-            model.parameters = replace(base_parameters, t0=float(t0))
-            clear_profiles.append(np.asarray(model.clear()))
+            if args.m2_5a:
+                clear_for_t0 = []
+                for zeta_vmr in zeta_vmr_grid:
+                    model.parameters = replace(
+                        base_parameters,
+                        t0=float(t0),
+                        log_vmr_co=base_parameters.log_vmr_co + float(zeta_vmr),
+                        log_vmr_h2o=base_parameters.log_vmr_h2o + float(zeta_vmr),
+                        log_vmr_ch4=base_parameters.log_vmr_ch4 + float(zeta_vmr),
+                        log_vmr_hf=base_parameters.log_vmr_hf + float(zeta_vmr),
+                    )
+                    clear_for_t0.append(np.asarray(model.clear()))
+                clear_profiles.append(clear_for_t0)
+            else:
+                model.parameters = replace(base_parameters, t0=float(t0))
+                clear_profiles.append(np.asarray(model.clear()))
             cloudy_for_t0 = []
             for log_p_cloud in log_p_cloud_grid:
-                model.parameters = replace(
-                    base_parameters,
-                    t0=float(t0),
-                    log_p_cloud=float(log_p_cloud),
-                )
-                cloudy_for_t0.append(np.asarray(model.cloudy()))
+                if args.m2_5a:
+                    cloudy_for_log_p = []
+                    for zeta_vmr in zeta_vmr_grid:
+                        model.parameters = replace(
+                            base_parameters,
+                            t0=float(t0),
+                            log_p_cloud=float(log_p_cloud),
+                            log_vmr_co=base_parameters.log_vmr_co + float(zeta_vmr),
+                            log_vmr_h2o=base_parameters.log_vmr_h2o + float(zeta_vmr),
+                            log_vmr_ch4=base_parameters.log_vmr_ch4 + float(zeta_vmr),
+                            log_vmr_hf=base_parameters.log_vmr_hf + float(zeta_vmr),
+                        )
+                        cloudy_for_log_p.append(np.asarray(model.cloudy()))
+                    cloudy_for_t0.append(cloudy_for_log_p)
+                else:
+                    model.parameters = replace(
+                        base_parameters,
+                        t0=float(t0),
+                        log_p_cloud=float(log_p_cloud),
+                    )
+                    cloudy_for_t0.append(np.asarray(model.cloudy()))
             cloudy_profiles.append(cloudy_for_t0)
         clear_profile_grid = np.asarray(clear_profiles)
         cloudy_profile_grid = np.asarray(cloudy_profiles)
         metadata = {
-            "profile_source": "exojax_powerlaw_t0_cloud_grid",
+            "profile_source": (
+                "exojax_powerlaw_t0_vmr_cloud_grid"
+                if args.m2_5a
+                else "exojax_powerlaw_t0_cloud_grid"
+            ),
             "atmosphere_preset": (
-                "yama_luhman16b_exomol" if args.m2_4c else "default_hitemp_h2_median"
+                "yama_luhman16b_exomol"
+                if args.m2_4c or args.m2_5a
+                else "default_hitemp_h2_median"
             ),
             "alpha": base_parameters.alpha,
             "logg": base_parameters.logg,
@@ -167,15 +236,27 @@ def main():
             "cloud_column_optical_depth": base_parameters.cloud_column_optical_depth,
         }
 
-    save_t0_cloud_profile_grid(
-        args.out,
-        chip_data.wavelengths,
-        t0_grid,
-        log_p_cloud_grid,
-        clear_profile_grid,
-        cloudy_profile_grid,
-        metadata=metadata,
-    )
+    if args.m2_5a:
+        save_t0_vmr_cloud_profile_grid(
+            args.out,
+            chip_data.wavelengths,
+            t0_grid,
+            log_p_cloud_grid,
+            zeta_vmr_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+            metadata=metadata,
+        )
+    else:
+        save_t0_cloud_profile_grid(
+            args.out,
+            chip_data.wavelengths,
+            t0_grid,
+            log_p_cloud_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+            metadata=metadata,
+        )
     print(f"T0/cloud profile grid saved to {args.out}")
 
 

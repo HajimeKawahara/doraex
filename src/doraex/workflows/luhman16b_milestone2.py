@@ -16,6 +16,7 @@ from doraex.priors.spherical_gp import add_diagonal_jitter, squared_exponential_
 from doraex.spectra.exojax_forward import (
     load_cloud_profile_grid,
     load_t0_cloud_profile_grid,
+    load_t0_vmr_cloud_profile_grid,
     load_two_column_profiles,
     save_cloud_profile_grid,
     save_t0_cloud_profile_grid,
@@ -85,6 +86,45 @@ def _interpolate_profile_grid_2d(x_grid, y_grid, profile_grid, x, y):
         + x_fraction * (1.0 - y_fraction) * p10
         + (1.0 - x_fraction) * y_fraction * p01
         + x_fraction * y_fraction * p11
+    )
+
+
+def _interpolate_profile_grid_3d(x_grid, y_grid, z_grid, profile_grid, x, y, z):
+    """Trilinearly interpolate a precomputed three-parameter profile grid."""
+
+    x_grid = jnp.asarray(x_grid)
+    y_grid = jnp.asarray(y_grid)
+    z_grid = jnp.asarray(z_grid)
+    profile_grid = jnp.asarray(profile_grid)
+    x = jnp.asarray(x)
+    y = jnp.asarray(y)
+    z = jnp.asarray(z)
+    x_index = jnp.searchsorted(x_grid, x, side="right") - 1
+    y_index = jnp.searchsorted(y_grid, y, side="right") - 1
+    z_index = jnp.searchsorted(z_grid, z, side="right") - 1
+    x_index = jnp.clip(x_index, 0, x_grid.shape[0] - 2)
+    y_index = jnp.clip(y_index, 0, y_grid.shape[0] - 2)
+    z_index = jnp.clip(z_index, 0, z_grid.shape[0] - 2)
+    x_fraction = (x - x_grid[x_index]) / (x_grid[x_index + 1] - x_grid[x_index])
+    y_fraction = (y - y_grid[y_index]) / (y_grid[y_index + 1] - y_grid[y_index])
+    z_fraction = (z - z_grid[z_index]) / (z_grid[z_index + 1] - z_grid[z_index])
+    p000 = profile_grid[x_index, y_index, z_index]
+    p100 = profile_grid[x_index + 1, y_index, z_index]
+    p010 = profile_grid[x_index, y_index + 1, z_index]
+    p110 = profile_grid[x_index + 1, y_index + 1, z_index]
+    p001 = profile_grid[x_index, y_index, z_index + 1]
+    p101 = profile_grid[x_index + 1, y_index, z_index + 1]
+    p011 = profile_grid[x_index, y_index + 1, z_index + 1]
+    p111 = profile_grid[x_index + 1, y_index + 1, z_index + 1]
+    return (
+        (1.0 - x_fraction) * (1.0 - y_fraction) * (1.0 - z_fraction) * p000
+        + x_fraction * (1.0 - y_fraction) * (1.0 - z_fraction) * p100
+        + (1.0 - x_fraction) * y_fraction * (1.0 - z_fraction) * p010
+        + x_fraction * y_fraction * (1.0 - z_fraction) * p110
+        + (1.0 - x_fraction) * (1.0 - y_fraction) * z_fraction * p001
+        + x_fraction * (1.0 - y_fraction) * z_fraction * p101
+        + (1.0 - x_fraction) * y_fraction * z_fraction * p011
+        + x_fraction * y_fraction * z_fraction * p111
     )
 
 
@@ -263,6 +303,140 @@ def load_milestone2_joint_free_t0_cloud_inputs(
         geometry,
         np.asarray(t0_grids),
         np.asarray(log_p_cloud_grids),
+        np.asarray(clear_profile_grids),
+        np.asarray(cloudy_profile_grids),
+    )
+
+
+def load_milestone2_free_t0_vmr_cloud_inputs(
+    data_dir,
+    profile_grid_path=None,
+    chip_index=1,
+    nside=8,
+    smoke_test=False,
+    smoke_wavelength_step=64,
+    smoke_phase_count=4,
+    smoke_t0_grid=None,
+    smoke_log_p_cloud_grid=None,
+    smoke_zeta_vmr_grid=None,
+):
+    """Load Luhman 16B data, geometry, and T0/VMR/cloud profile grids."""
+
+    chip_data = load_luhman16b_chip(data_dir, chip_index=chip_index)
+    if smoke_test:
+        chip_data = subset_chip_data(
+            chip_data,
+            wavelength_step=smoke_wavelength_step,
+            phase_count=smoke_phase_count,
+        )
+    geometry = build_luhman16b_geometry(nside=nside)
+    if profile_grid_path is None:
+        if not smoke_test:
+            raise ValueError("profile_grid_path is required unless smoke_test=True")
+        if smoke_t0_grid is None:
+            smoke_t0_grid = np.linspace(1000.0, 1700.0, 5)
+        if smoke_log_p_cloud_grid is None:
+            smoke_log_p_cloud_grid = np.linspace(-2.0, 2.0, 5)
+        if smoke_zeta_vmr_grid is None:
+            smoke_zeta_vmr_grid = np.linspace(-0.5, 0.5, 5)
+        clear_grid_1d, cloudy_grid_2d = synthetic_t0_cloud_profile_grid(
+            chip_data.wavelengths,
+            smoke_t0_grid,
+            smoke_log_p_cloud_grid,
+        )
+        clear_profile_grid = np.repeat(
+            clear_grid_1d[:, None, :],
+            len(smoke_zeta_vmr_grid),
+            axis=1,
+        )
+        cloudy_profile_grid = np.repeat(
+            cloudy_grid_2d[:, :, None, :],
+            len(smoke_zeta_vmr_grid),
+            axis=2,
+        )
+        t0_grid = np.asarray(smoke_t0_grid)
+        log_p_cloud_grid = np.asarray(smoke_log_p_cloud_grid)
+        zeta_vmr_grid = np.asarray(smoke_zeta_vmr_grid)
+    else:
+        (
+            t0_grid,
+            log_p_cloud_grid,
+            zeta_vmr_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+        ) = load_t0_vmr_cloud_profile_grid(
+            profile_grid_path,
+            expected_wavelengths=chip_data.wavelengths,
+        )
+    return (
+        chip_data,
+        geometry,
+        t0_grid,
+        log_p_cloud_grid,
+        zeta_vmr_grid,
+        clear_profile_grid,
+        cloudy_profile_grid,
+    )
+
+
+def load_milestone2_joint_free_t0_vmr_cloud_inputs(
+    data_dir,
+    chip_indices=(0, 1, 2, 3),
+    profile_grid_template=None,
+    nside=8,
+    smoke_test=False,
+    smoke_wavelength_step=64,
+    smoke_phase_count=4,
+    smoke_t0_grid=None,
+    smoke_log_p_cloud_grid=None,
+    smoke_zeta_vmr_grid=None,
+):
+    """Load multi-chip Luhman 16B data and T0/VMR/cloud profile grids."""
+
+    chip_data_list = []
+    t0_grids = []
+    log_p_cloud_grids = []
+    zeta_vmr_grids = []
+    clear_profile_grids = []
+    cloudy_profile_grids = []
+    geometry = build_luhman16b_geometry(nside=nside)
+    for chip_index in chip_indices:
+        profile_grid_path = None
+        if profile_grid_template is not None:
+            profile_grid_path = str(profile_grid_template).format(chip=chip_index)
+        (
+            chip_data,
+            _,
+            t0_grid,
+            log_p_cloud_grid,
+            zeta_vmr_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+        ) = load_milestone2_free_t0_vmr_cloud_inputs(
+            data_dir,
+            profile_grid_path=profile_grid_path,
+            chip_index=chip_index,
+            nside=nside,
+            smoke_test=smoke_test,
+            smoke_wavelength_step=smoke_wavelength_step,
+            smoke_phase_count=smoke_phase_count,
+            smoke_t0_grid=smoke_t0_grid,
+            smoke_log_p_cloud_grid=smoke_log_p_cloud_grid,
+            smoke_zeta_vmr_grid=smoke_zeta_vmr_grid,
+        )
+        chip_data_list.append(chip_data)
+        t0_grids.append(t0_grid)
+        log_p_cloud_grids.append(log_p_cloud_grid)
+        zeta_vmr_grids.append(zeta_vmr_grid)
+        clear_profile_grids.append(clear_profile_grid)
+        cloudy_profile_grids.append(cloudy_profile_grid)
+
+    return (
+        chip_data_list,
+        geometry,
+        np.asarray(t0_grids),
+        np.asarray(log_p_cloud_grids),
+        np.asarray(zeta_vmr_grids),
         np.asarray(clear_profile_grids),
         np.asarray(cloudy_profile_grids),
     )
@@ -496,6 +670,7 @@ def run_free_t0_cloud_two_column_mcmc(
     log_p_cloud_grid,
     clear_profile_grid,
     cloudy_profile_grid,
+    zeta_vmr_grid=None,
     num_warmup=500,
     num_samples=1000,
     num_chains=1,
@@ -504,8 +679,10 @@ def run_free_t0_cloud_two_column_mcmc(
     fixed_period=4.83,
     t0_bounds=(1000.0, 1700.0),
     log_p_cloud_bounds=(-2.0, 2.0),
+    zeta_vmr_bounds=(-0.5, 0.5),
     init_t0=1215.0,
     init_log_p_cloud=1.28,
+    init_zeta_vmr=0.0,
     target_accept_prob=0.98,
     dense_mass=True,
     max_tree_depth=10,
@@ -609,8 +786,10 @@ def make_joint_free_t0_cloud_nuts_kernel(
     max_tree_depth=10,
     init_log_p_cloud=1.28,
     init_t0=1215.0,
+    init_zeta_vmr=0.0,
     shared_atmosphere=False,
     normalization_mode="surface_scale",
+    sample_zeta_vmr=False,
 ):
     """Create a NUTS kernel for joint multi-chip Milestone 2-4 runs."""
 
@@ -633,6 +812,8 @@ def make_joint_free_t0_cloud_nuts_kernel(
         raise ValueError("normalization_mode must be 'surface_scale' or 'yama'")
     if not fix_geometry:
         init_values.update({"cosi": 0.485, "v": 31.2, "q1": 0.81, "q2": 0.59})
+    if sample_zeta_vmr:
+        init_values["zeta_vmr"] = jnp.full(atmosphere_shape, init_zeta_vmr)
     if fixed_ell_b is None:
         init_values["ell_b"] = 0.3
     if period_mode == "sampled":
@@ -663,8 +844,11 @@ def run_joint_free_t0_cloud_two_column_mcmc(
     fixed_period=4.83,
     t0_bounds=(1000.0, 1700.0),
     log_p_cloud_bounds=(-2.0, 2.0),
+    zeta_vmr_grid=None,
+    zeta_vmr_bounds=(-0.5, 0.5),
     init_t0=1215.0,
     init_log_p_cloud=1.28,
+    init_zeta_vmr=0.0,
     target_accept_prob=0.98,
     dense_mass=True,
     max_tree_depth=10,
@@ -691,6 +875,7 @@ def run_joint_free_t0_cloud_two_column_mcmc(
     wavelengths = jnp.asarray(np.stack([chip.wavelengths for chip in chip_data_list], axis=0))
     t0_grid = jnp.asarray(t0_grid)
     log_p_cloud_grid = jnp.asarray(log_p_cloud_grid)
+    zeta_vmr_grid = None if zeta_vmr_grid is None else jnp.asarray(zeta_vmr_grid)
     clear_profile_grid = jnp.asarray(clear_profile_grid)
     cloudy_profile_grid = jnp.asarray(cloudy_profile_grid)
 
@@ -706,10 +891,12 @@ def run_joint_free_t0_cloud_two_column_mcmc(
             log_p_cloud_grid,
             clear_profile_grid,
             cloudy_profile_grid,
+            zeta_vmr_grid=zeta_vmr_grid,
             period_mode=period_mode,
             fixed_period=fixed_period,
             t0_bounds=t0_bounds,
             log_p_cloud_bounds=log_p_cloud_bounds,
+            zeta_vmr_bounds=zeta_vmr_bounds,
             sigma_b_scale=sigma_b_scale,
             fixed_ell_b=fixed_ell_b,
             fix_geometry=fix_geometry,
@@ -734,8 +921,10 @@ def run_joint_free_t0_cloud_two_column_mcmc(
         max_tree_depth=max_tree_depth,
         init_log_p_cloud=init_log_p_cloud,
         init_t0=init_t0,
+        init_zeta_vmr=init_zeta_vmr,
         shared_atmosphere=shared_atmosphere,
         normalization_mode=normalization_mode,
+        sample_zeta_vmr=zeta_vmr_grid is not None,
     )
     mcmc = MCMC(
         kernel,
@@ -836,6 +1025,8 @@ def save_free_t0_cloud_two_column_samples(
     period_mode,
     t0_bounds,
     log_p_cloud_bounds,
+    zeta_vmr_grid=None,
+    zeta_vmr_bounds=(-0.5, 0.5),
     sigma_b_scale=None,
     fixed_ell_b=None,
     fix_geometry=True,
@@ -858,6 +1049,7 @@ def save_free_t0_cloud_two_column_samples(
             "period_mode": np.asarray(period_mode),
             "t0_bounds": np.asarray(t0_bounds),
             "log_p_cloud_bounds": np.asarray(log_p_cloud_bounds),
+            "zeta_vmr_bounds": np.asarray(zeta_vmr_bounds),
             "sigma_b_scale": np.asarray(
                 np.nan if sigma_b_scale is None else sigma_b_scale
             ),
@@ -865,6 +1057,8 @@ def save_free_t0_cloud_two_column_samples(
             "fix_geometry": np.asarray(fix_geometry),
         }
     )
+    if zeta_vmr_grid is not None:
+        save_data["zeta_vmr_grid"] = np.asarray(zeta_vmr_grid)
     np.savez(output_path, **save_data)
 
 
@@ -880,6 +1074,8 @@ def save_joint_free_t0_cloud_two_column_samples(
     period_mode,
     t0_bounds,
     log_p_cloud_bounds,
+    zeta_vmr_grid=None,
+    zeta_vmr_bounds=(-0.5, 0.5),
     sigma_b_scale=None,
     fixed_ell_b=None,
     fix_geometry=True,
@@ -904,6 +1100,7 @@ def save_joint_free_t0_cloud_two_column_samples(
             "period_mode": np.asarray(period_mode),
             "t0_bounds": np.asarray(t0_bounds),
             "log_p_cloud_bounds": np.asarray(log_p_cloud_bounds),
+            "zeta_vmr_bounds": np.asarray(zeta_vmr_bounds),
             "sigma_b_scale": np.asarray(
                 np.nan if sigma_b_scale is None else sigma_b_scale
             ),
@@ -913,6 +1110,8 @@ def save_joint_free_t0_cloud_two_column_samples(
             "normalization_mode": np.asarray(normalization_mode),
         }
     )
+    if zeta_vmr_grid is not None:
+        save_data["zeta_vmr_grid"] = np.asarray(zeta_vmr_grid)
     np.savez(output_path, **save_data)
 
 
@@ -968,6 +1167,7 @@ def _fixed_sample_at(samples, index):
         "P",
         "log_p_cloud",
         "T0",
+        "zeta_vmr",
     }
     return {
         name: jnp.asarray(samples[name])[index]
@@ -1043,21 +1243,40 @@ def two_column_operator_from_free_t0_cloud_sample(
     clear_profile_grid,
     cloudy_profile_grid,
     sample,
+    zeta_vmr_grid=None,
 ):
     """Build ``(baseline, W_delta)`` for one grid-based T0/cloud sample."""
 
-    clear_profile = _interpolate_profile_grid(
-        t0_grid,
-        clear_profile_grid,
-        sample["T0"],
-    )
-    cloudy_profile = _interpolate_profile_grid_2d(
-        t0_grid,
-        log_p_cloud_grid,
-        cloudy_profile_grid,
-        sample["T0"],
-        sample["log_p_cloud"],
-    )
+    if zeta_vmr_grid is None:
+        clear_profile = _interpolate_profile_grid(
+            t0_grid,
+            clear_profile_grid,
+            sample["T0"],
+        )
+        cloudy_profile = _interpolate_profile_grid_2d(
+            t0_grid,
+            log_p_cloud_grid,
+            cloudy_profile_grid,
+            sample["T0"],
+            sample["log_p_cloud"],
+        )
+    else:
+        clear_profile = _interpolate_profile_grid_2d(
+            t0_grid,
+            zeta_vmr_grid,
+            clear_profile_grid,
+            sample["T0"],
+            sample["zeta_vmr"],
+        )
+        cloudy_profile = _interpolate_profile_grid_3d(
+            t0_grid,
+            log_p_cloud_grid,
+            zeta_vmr_grid,
+            cloudy_profile_grid,
+            sample["T0"],
+            sample["log_p_cloud"],
+            sample["zeta_vmr"],
+        )
     return two_column_operator_from_sample(
         chip_data,
         geometry,
@@ -1076,6 +1295,7 @@ def _chip_sample(sample, chip_position):
         "log_p_cloud",
         "f_cloud",
         "surface_scale",
+        "zeta_vmr",
         "A",
         "sigma_d",
         "log_w",
@@ -1094,6 +1314,7 @@ def joint_operators_from_free_t0_cloud_sample(
     clear_profile_grid,
     cloudy_profile_grid,
     sample,
+    zeta_vmr_grid=None,
 ):
     """Build concatenated joint baseline and contrast matrix for one sample."""
 
@@ -1109,6 +1330,7 @@ def joint_operators_from_free_t0_cloud_sample(
             clear_profile_grid[chip_position],
             cloudy_profile_grid[chip_position],
             chip_sample,
+            None if zeta_vmr_grid is None else zeta_vmr_grid[chip_position],
         )
         baselines.append(baseline)
         contrast_matrices.append(contrast_matrix)
@@ -1206,6 +1428,7 @@ def conditional_contrast_map_for_free_t0_cloud_sample(
     clear_profile_grid,
     cloudy_profile_grid,
     sample,
+    zeta_vmr_grid=None,
     gp_jitter=1.0e-6,
 ):
     """Compute conditional cloud-contrast posterior for one T0/cloud sample."""
@@ -1218,6 +1441,7 @@ def conditional_contrast_map_for_free_t0_cloud_sample(
         clear_profile_grid,
         cloudy_profile_grid,
         sample,
+        zeta_vmr_grid,
     )
     prior_covariance = add_diagonal_jitter(
         squared_exponential_covariance(
@@ -1249,6 +1473,7 @@ def conditional_contrast_map_for_joint_free_t0_cloud_sample(
     clear_profile_grid,
     cloudy_profile_grid,
     sample,
+    zeta_vmr_grid=None,
     gp_jitter=1.0e-6,
 ):
     """Compute conditional shared contrast-map posterior for one joint sample."""
@@ -1261,6 +1486,7 @@ def conditional_contrast_map_for_joint_free_t0_cloud_sample(
         clear_profile_grid,
         cloudy_profile_grid,
         sample,
+        zeta_vmr_grid,
     )
     prior_covariance = add_diagonal_jitter(
         squared_exponential_covariance(
@@ -1400,6 +1626,7 @@ def compute_free_t0_cloud_contrast_map_moments(
     cloudy_profile_grid,
     samples,
     sample_indices=None,
+    zeta_vmr_grid=None,
 ):
     """Compute posterior cloud-map moments for grid-based free T0/cloud runs."""
 
@@ -1422,6 +1649,7 @@ def compute_free_t0_cloud_contrast_map_moments(
             clear_profile_grid,
             cloudy_profile_grid,
             sample,
+            zeta_vmr_grid=zeta_vmr_grid,
         )
         conditional_means.append(mean)
         conditional_diag_sum = conditional_diag_sum + jnp.diag(covariance)
@@ -1452,6 +1680,7 @@ def compute_joint_free_t0_cloud_contrast_map_moments(
     cloudy_profile_grid,
     samples,
     sample_indices=None,
+    zeta_vmr_grid=None,
 ):
     """Compute shared contrast-map moments for joint multi-chip runs."""
 
@@ -1474,6 +1703,7 @@ def compute_joint_free_t0_cloud_contrast_map_moments(
             clear_profile_grid,
             cloudy_profile_grid,
             sample,
+            zeta_vmr_grid=zeta_vmr_grid,
         )
         conditional_means.append(mean)
         conditional_diag_sum = conditional_diag_sum + jnp.diag(covariance)
@@ -1530,6 +1760,8 @@ def fixed_two_column_median_sample(samples):
         "t0_grid",
         "clear_profile_grid",
         "t0_bounds",
+        "zeta_vmr_grid",
+        "zeta_vmr_bounds",
     }
     for name, values in samples.items():
         array = np.asarray(values)
@@ -1596,6 +1828,7 @@ def reconstruct_free_t0_cloud_two_column_timeseries(
     cloudy_profile_grid,
     samples,
     contrast_map,
+    zeta_vmr_grid=None,
 ):
     """Reconstruct spectra from median T0/cloud nonlinear parameters."""
 
@@ -1608,6 +1841,7 @@ def reconstruct_free_t0_cloud_two_column_timeseries(
         clear_profile_grid,
         cloudy_profile_grid,
         sample,
+        zeta_vmr_grid,
     )
     model = baseline + contrast_matrix @ jnp.asarray(contrast_map)
     return model.reshape(chip_data.flux.shape), sample
@@ -1622,6 +1856,7 @@ def reconstruct_joint_free_t0_cloud_two_column_timeseries(
     cloudy_profile_grid,
     samples,
     contrast_map,
+    zeta_vmr_grid=None,
 ):
     """Reconstruct per-chip spectra from median joint parameters."""
 
@@ -1638,6 +1873,7 @@ def reconstruct_joint_free_t0_cloud_two_column_timeseries(
             clear_profile_grid[chip_position],
             cloudy_profile_grid[chip_position],
             chip_sample,
+            None if zeta_vmr_grid is None else zeta_vmr_grid[chip_position],
         )
         model = baseline + contrast_matrix @ jnp.asarray(contrast_map)
         models.append(model.reshape(chip_data.flux.shape))

@@ -338,6 +338,42 @@ def test_joint_free_t0_cloud_two_column_model_trace_smoke():
     assert yama_trace["A"]["value"].shape == (2,)
     assert "surface_scale" not in yama_trace
     assert yama_trace["sigma_d"]["value"].shape == (2,)
+
+    zeta_vmr_grid = np.linspace(-0.5, 0.5, 3)
+    clear_vmr_grids = [
+        np.repeat(clear_grid[:, None, :], len(zeta_vmr_grid), axis=1)
+        for clear_grid in clear_grids
+    ]
+    cloudy_vmr_grids = [
+        np.repeat(cloudy_grid[:, :, None, :], len(zeta_vmr_grid), axis=2)
+        for cloudy_grid in cloudy_grids
+    ]
+    vmr_trace = handlers.trace(seeded_model).get_trace(
+        jnp.asarray(np.stack([chip0.flux, chip1.flux], axis=0)),
+        geometry.theta,
+        geometry.phi,
+        geometry.distance_matrix,
+        jnp.asarray(chip0.obs_times),
+        jnp.asarray(np.stack([chip0.wavelengths, chip1.wavelengths], axis=0)),
+        jnp.asarray(np.stack([t0_grid, t0_grid], axis=0)),
+        jnp.asarray(np.stack([log_p_cloud_grid, log_p_cloud_grid], axis=0)),
+        jnp.asarray(np.stack(clear_vmr_grids, axis=0)),
+        jnp.asarray(np.stack(cloudy_vmr_grids, axis=0)),
+        zeta_vmr_grid=jnp.asarray(np.stack([zeta_vmr_grid, zeta_vmr_grid], axis=0)),
+        period_mode="fixed",
+        fixed_ell_b=0.3,
+        shared_atmosphere=True,
+        normalization_mode="yama",
+    )
+
+    assert vmr_trace["obs"]["value"].shape == (
+        chip0.flux.size + chip1.flux.size,
+    )
+    assert vmr_trace["T0"]["value"].shape == ()
+    assert vmr_trace["log_p_cloud"]["value"].shape == ()
+    assert vmr_trace["zeta_vmr"]["value"].shape == ()
+    assert vmr_trace["f_cloud"]["value"].shape == ()
+    assert vmr_trace["A"]["value"].shape == (2,)
     assert yama_trace["sigma_b"]["value"].shape == ()
 
 
@@ -425,6 +461,10 @@ def test_chip_aware_milestone2_default_paths():
     assert (
         module.t0_cloud_grid_path(1, atmosphere_tag="exomol").name
         == "milestone2_t0_cloud_grid_profiles_exomol_chip1.npz"
+    )
+    assert (
+        module.t0_vmr_cloud_grid_path(1, atmosphere_tag="exomol").name
+        == "milestone2_t0_vmr_cloud_grid_profiles_exomol_chip1.npz"
     )
     assert (
         module.free_t0_cloud_sample_path("results/m2", 2, "fixed").name

@@ -60,6 +60,47 @@ def _interpolate_profile_grid_2d(x_grid, y_grid, profile_grid, x, y):
     )
 
 
+def _interpolate_profile_grid_3d(x_grid, y_grid, z_grid, profile_grid, x, y, z):
+    """Trilinearly interpolate a precomputed three-parameter profile grid."""
+
+    x_grid = jnp.asarray(x_grid)
+    y_grid = jnp.asarray(y_grid)
+    z_grid = jnp.asarray(z_grid)
+    profile_grid = jnp.asarray(profile_grid)
+    x = jnp.asarray(x)
+    y = jnp.asarray(y)
+    z = jnp.asarray(z)
+
+    x_index = jnp.searchsorted(x_grid, x, side="right") - 1
+    y_index = jnp.searchsorted(y_grid, y, side="right") - 1
+    z_index = jnp.searchsorted(z_grid, z, side="right") - 1
+    x_index = jnp.clip(x_index, 0, x_grid.shape[0] - 2)
+    y_index = jnp.clip(y_index, 0, y_grid.shape[0] - 2)
+    z_index = jnp.clip(z_index, 0, z_grid.shape[0] - 2)
+
+    x_fraction = (x - x_grid[x_index]) / (x_grid[x_index + 1] - x_grid[x_index])
+    y_fraction = (y - y_grid[y_index]) / (y_grid[y_index + 1] - y_grid[y_index])
+    z_fraction = (z - z_grid[z_index]) / (z_grid[z_index + 1] - z_grid[z_index])
+    p000 = profile_grid[x_index, y_index, z_index]
+    p100 = profile_grid[x_index + 1, y_index, z_index]
+    p010 = profile_grid[x_index, y_index + 1, z_index]
+    p110 = profile_grid[x_index + 1, y_index + 1, z_index]
+    p001 = profile_grid[x_index, y_index, z_index + 1]
+    p101 = profile_grid[x_index + 1, y_index, z_index + 1]
+    p011 = profile_grid[x_index, y_index + 1, z_index + 1]
+    p111 = profile_grid[x_index + 1, y_index + 1, z_index + 1]
+    return (
+        (1.0 - x_fraction) * (1.0 - y_fraction) * (1.0 - z_fraction) * p000
+        + x_fraction * (1.0 - y_fraction) * (1.0 - z_fraction) * p100
+        + (1.0 - x_fraction) * y_fraction * (1.0 - z_fraction) * p010
+        + x_fraction * y_fraction * (1.0 - z_fraction) * p110
+        + (1.0 - x_fraction) * (1.0 - y_fraction) * z_fraction * p001
+        + x_fraction * (1.0 - y_fraction) * z_fraction * p101
+        + (1.0 - x_fraction) * y_fraction * z_fraction * p011
+        + x_fraction * y_fraction * z_fraction * p111
+    )
+
+
 def luhman16b_ureshino_model(
     data,
     theta,
@@ -434,10 +475,12 @@ def free_t0_cloud_two_column_doppler_model(
     log_p_cloud_grid,
     clear_profile_grid,
     cloudy_profile_grid,
+    zeta_vmr_grid=None,
     period_mode="fixed",
     fixed_period=4.83,
     t0_bounds=(1000.0, 1700.0),
     log_p_cloud_bounds=(-2.0, 2.0),
+    zeta_vmr_bounds=(-0.5, 0.5),
     pixel_area=1.0,
     log_w_scale=0.1,
     surface_scale_location=0.0077,
@@ -465,14 +508,36 @@ def free_t0_cloud_two_column_doppler_model(
         "log_p_cloud",
         dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]),
     )
-    clear_profile = _interpolate_profile_grid(t0_grid, clear_profile_grid, t0)
-    cloudy_profile = _interpolate_profile_grid_2d(
-        t0_grid,
-        log_p_cloud_grid,
-        cloudy_profile_grid,
-        t0,
-        log_p_cloud,
-    )
+    if zeta_vmr_grid is None:
+        clear_profile = _interpolate_profile_grid(t0_grid, clear_profile_grid, t0)
+        cloudy_profile = _interpolate_profile_grid_2d(
+            t0_grid,
+            log_p_cloud_grid,
+            cloudy_profile_grid,
+            t0,
+            log_p_cloud,
+        )
+    else:
+        zeta_vmr = numpyro.sample(
+            "zeta_vmr",
+            dist.Uniform(zeta_vmr_bounds[0], zeta_vmr_bounds[1]),
+        )
+        clear_profile = _interpolate_profile_grid_2d(
+            t0_grid,
+            zeta_vmr_grid,
+            clear_profile_grid,
+            t0,
+            zeta_vmr,
+        )
+        cloudy_profile = _interpolate_profile_grid_3d(
+            t0_grid,
+            log_p_cloud_grid,
+            zeta_vmr_grid,
+            cloudy_profile_grid,
+            t0,
+            log_p_cloud,
+            zeta_vmr,
+        )
     return fixed_two_column_doppler_model(
         data,
         theta,
@@ -511,10 +576,12 @@ def joint_free_t0_cloud_two_column_doppler_model(
     log_p_cloud_grid,
     clear_profile_grid,
     cloudy_profile_grid,
+    zeta_vmr_grid=None,
     period_mode="fixed",
     fixed_period=4.83,
     t0_bounds=(1000.0, 1700.0),
     log_p_cloud_bounds=(-2.0, 2.0),
+    zeta_vmr_bounds=(-0.5, 0.5),
     pixel_area=1.0,
     log_w_scale=0.1,
     surface_scale_location=0.0077,
@@ -570,6 +637,7 @@ def joint_free_t0_cloud_two_column_doppler_model(
     else:
         raise ValueError("period_mode must be 'sampled' or 'fixed'")
 
+    has_vmr_grid = zeta_vmr_grid is not None
     if shared_atmosphere:
         t0 = numpyro.sample("T0", dist.Uniform(t0_bounds[0], t0_bounds[1]))
         log_p_cloud = numpyro.sample(
@@ -577,6 +645,13 @@ def joint_free_t0_cloud_two_column_doppler_model(
             dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]),
         )
         mean_cloud_fraction = numpyro.sample("f_cloud", dist.Uniform(0.0, 1.0))
+        if has_vmr_grid:
+            zeta_vmr = numpyro.sample(
+                "zeta_vmr",
+                dist.Uniform(zeta_vmr_bounds[0], zeta_vmr_bounds[1]),
+            )
+        else:
+            zeta_vmr = None
     else:
         t0 = numpyro.sample(
             "T0",
@@ -590,6 +665,13 @@ def joint_free_t0_cloud_two_column_doppler_model(
             "f_cloud",
             dist.Uniform(0.0, 1.0).expand([n_chip]),
         )
+        if has_vmr_grid:
+            zeta_vmr = numpyro.sample(
+                "zeta_vmr",
+                dist.Uniform(zeta_vmr_bounds[0], zeta_vmr_bounds[1]).expand([n_chip]),
+            )
+        else:
+            zeta_vmr = None
     if normalization_mode == "surface_scale":
         surface_scale = numpyro.sample(
             "surface_scale",
@@ -627,18 +709,37 @@ def joint_free_t0_cloud_two_column_doppler_model(
             if shared_atmosphere
             else mean_cloud_fraction[chip_index]
         )
-        clear_profile = _interpolate_profile_grid(
-            t0_grid[chip_index],
-            clear_profile_grid[chip_index],
-            t0_chip,
-        )
-        cloudy_profile = _interpolate_profile_grid_2d(
-            t0_grid[chip_index],
-            log_p_cloud_grid[chip_index],
-            cloudy_profile_grid[chip_index],
-            t0_chip,
-            log_p_cloud_chip,
-        )
+        if has_vmr_grid:
+            zeta_vmr_chip = zeta_vmr if shared_atmosphere else zeta_vmr[chip_index]
+            clear_profile = _interpolate_profile_grid_2d(
+                t0_grid[chip_index],
+                zeta_vmr_grid[chip_index],
+                clear_profile_grid[chip_index],
+                t0_chip,
+                zeta_vmr_chip,
+            )
+            cloudy_profile = _interpolate_profile_grid_3d(
+                t0_grid[chip_index],
+                log_p_cloud_grid[chip_index],
+                zeta_vmr_grid[chip_index],
+                cloudy_profile_grid[chip_index],
+                t0_chip,
+                log_p_cloud_chip,
+                zeta_vmr_chip,
+            )
+        else:
+            clear_profile = _interpolate_profile_grid(
+                t0_grid[chip_index],
+                clear_profile_grid[chip_index],
+                t0_chip,
+            )
+            cloudy_profile = _interpolate_profile_grid_2d(
+                t0_grid[chip_index],
+                log_p_cloud_grid[chip_index],
+                cloudy_profile_grid[chip_index],
+                t0_chip,
+                log_p_cloud_chip,
+            )
         baseline, contrast_matrix = two_column_operator_from_times(
             theta,
             phi,

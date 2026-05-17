@@ -70,6 +70,11 @@ def parse_args():
         action="store_true",
         help="Use Milestone 2-4d Yama-normalized shared-atmosphere defaults.",
     )
+    parser.add_argument(
+        "--m2-5a",
+        action="store_true",
+        help="Use Milestone 2-5a shared zeta_vmr atmosphere defaults.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--max-map-samples", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
@@ -82,12 +87,14 @@ def parse_args():
     )
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
-    if args.m2_4b or args.m2_4c or args.m2_4d:
+    if args.m2_4b or args.m2_4c or args.m2_4d or args.m2_5a:
         default_samples = str(
             ROOT / "results" / "milestone2_4a" / "mcmc_joint_chips_free_t0_cloud.npz"
         )
         default_out = str(ROOT / "results" / "milestone2_4a")
-        if args.m2_4d:
+        if args.m2_5a:
+            milestone = "milestone2_5a"
+        elif args.m2_4d:
             milestone = "milestone2_4d"
         elif args.m2_4c:
             milestone = "milestone2_4c"
@@ -103,6 +110,37 @@ def parse_args():
         if args.out_dir == default_out:
             args.out_dir = str(ROOT / "results" / milestone)
     return args
+
+
+def _interpolate_3d(x_grid, y_grid, z_grid, profile_grid, x, y, z):
+    """Trilinear interpolation helper for T0/log10 Pc/zeta_vmr products."""
+
+    x_grid = np.asarray(x_grid)
+    y_grid = np.asarray(y_grid)
+    z_grid = np.asarray(z_grid)
+    profile_grid = np.asarray(profile_grid)
+    x_index = np.searchsorted(x_grid, x, side="right") - 1
+    y_index = np.searchsorted(y_grid, y, side="right") - 1
+    z_index = np.searchsorted(z_grid, z, side="right") - 1
+    x_index = np.clip(x_index, 0, len(x_grid) - 2)
+    y_index = np.clip(y_index, 0, len(y_grid) - 2)
+    z_index = np.clip(z_index, 0, len(z_grid) - 2)
+    x_fraction = (x - x_grid[x_index]) / (x_grid[x_index + 1] - x_grid[x_index])
+    y_fraction = (y - y_grid[y_index]) / (y_grid[y_index + 1] - y_grid[y_index])
+    z_fraction = (z - z_grid[z_index]) / (z_grid[z_index + 1] - z_grid[z_index])
+    result = 0.0
+    for dx in (0, 1):
+        wx = x_fraction if dx else 1.0 - x_fraction
+        for dy in (0, 1):
+            wy = y_fraction if dy else 1.0 - y_fraction
+            for dz in (0, 1):
+                wz = z_fraction if dz else 1.0 - z_fraction
+                result = result + wx * wy * wz * profile_grid[
+                    x_index + dx,
+                    y_index + dy,
+                    z_index + dz,
+                ]
+    return result
 
 
 def _load_chip_data_list(args):
@@ -143,7 +181,15 @@ def _write_joint_diagnostics(path, samples, residuals, contrast_mean, cloud_frac
             float(np.max(row)) for row in cloud_rows
         ],
     }
-    for name in ("T0", "log_p_cloud", "f_cloud", "sigma_d", "surface_scale", "A"):
+    for name in (
+        "T0",
+        "log_p_cloud",
+        "zeta_vmr",
+        "f_cloud",
+        "sigma_d",
+        "surface_scale",
+        "A",
+    ):
         if name in samples:
             values = np.asarray(samples[name], dtype=float)
             if values.ndim == 1:
@@ -184,6 +230,9 @@ def main():
     log_p_cloud_grid = np.asarray(samples["log_p_cloud_grid"])
     clear_profile_grid = np.asarray(samples["clear_profile_grid"])
     cloudy_profile_grid = np.asarray(samples["cloudy_profile_grid"])
+    zeta_vmr_grid = (
+        np.asarray(samples["zeta_vmr_grid"]) if "zeta_vmr_grid" in samples else None
+    )
     sample_indices = _select_sample_indices(len(samples["sigma_b"]), args.max_map_samples)
 
     contrast_mean, contrast_var, cloud_mean, cloud_var = (
@@ -196,6 +245,7 @@ def main():
             cloudy_profile_grid,
             samples,
             sample_indices=sample_indices,
+            zeta_vmr_grid=zeta_vmr_grid,
         )
     )
     contrast_mean = np.asarray(contrast_mean)
@@ -218,6 +268,7 @@ def main():
         cloudy_profile_grid,
         samples,
         contrast_mean,
+        zeta_vmr_grid=zeta_vmr_grid,
     )
     residuals = [np.asarray(chip.flux) - np.asarray(model) for chip, model in zip(chip_data_list, models)]
 
@@ -240,18 +291,37 @@ def main():
 
         t0_median = float(np.asarray(chip_samples[chip_position]["T0"]))
         log_p_median = float(np.asarray(chip_samples[chip_position]["log_p_cloud"]))
-        clear_median = _interpolate_1d(
-            t0_grid[chip_position],
-            clear_profile_grid[chip_position],
-            t0_median,
-        )
-        cloudy_median = _interpolate_2d(
-            t0_grid[chip_position],
-            log_p_cloud_grid[chip_position],
-            cloudy_profile_grid[chip_position],
-            t0_median,
-            log_p_median,
-        )
+        if zeta_vmr_grid is None:
+            clear_median = _interpolate_1d(
+                t0_grid[chip_position],
+                clear_profile_grid[chip_position],
+                t0_median,
+            )
+            cloudy_median = _interpolate_2d(
+                t0_grid[chip_position],
+                log_p_cloud_grid[chip_position],
+                cloudy_profile_grid[chip_position],
+                t0_median,
+                log_p_median,
+            )
+        else:
+            zeta_median = float(np.asarray(chip_samples[chip_position]["zeta_vmr"]))
+            clear_median = _interpolate_2d(
+                t0_grid[chip_position],
+                zeta_vmr_grid[chip_position],
+                clear_profile_grid[chip_position],
+                t0_median,
+                zeta_median,
+            )
+            cloudy_median = _interpolate_3d(
+                t0_grid[chip_position],
+                log_p_cloud_grid[chip_position],
+                zeta_vmr_grid[chip_position],
+                cloudy_profile_grid[chip_position],
+                t0_median,
+                log_p_median,
+                zeta_median,
+            )
         delta_scale = float(np.sqrt(np.mean((cloudy_median - clear_median) ** 2)))
         delta_s_mean = contrast_mean * delta_scale
         delta_s_var = contrast_var * delta_scale**2

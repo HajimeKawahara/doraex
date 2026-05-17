@@ -654,3 +654,86 @@ python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
 The `--m2-4d` preset reads the M2-4c ExoMol grids, writes samples to
 `results/milestone2_4d/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`,
 and writes products to `results/milestone2_4d`.
+
+## Milestone 2-5a
+
+Milestone 2-5a keeps the clear/cloudy definition fixed: both columns share
+the same T-P profile, VMRs, gravity, and geometry, and only the cloudy column
+adds the gray cloud opacity. The relaxation relative to M2-4d is a common
+molecular opacity scale,
+
+```text
+log10 VMR_i = log10 VMR_i,ExoMol + zeta_vmr
+```
+
+for CO, H2O, CH4, and HF. This tests whether the M2-4d `f_cloud ~= 1`
+solution is caused by anchoring the shared atmosphere too tightly to a
+single-component cloudy retrieval.
+
+Generate the ExoMol-consistent T0/log10 Pc/zeta_vmr grids for all chips:
+
+```bash
+for chip in 0 1 2 3; do
+  python examples/luhman16b_yama/generate_milestone2_t0_cloud_grid_profiles.py \
+    --m2-5a \
+    --chip-index ${chip} \
+    --opacity-cache-dir data/opacities/luhman16b_powerlaw \
+    --database-dir ~/data_mol/.database \
+    --t0-min 1000 \
+    --t0-max 1700 \
+    --t0-count 15 \
+    --log-p-cloud-min -2.0 \
+    --log-p-cloud-max 2.0 \
+    --log-p-cloud-count 33 \
+    --zeta-vmr-min -0.5 \
+    --zeta-vmr-max 0.5 \
+    --zeta-vmr-count 9
+done
+```
+
+Before running NUTS, optionally scan the grid with a fast mean-spectrum
+diagnostic. This reports where the observed chip-mean spectrum lies on the
+clear/cloudy segment for each `(T0, log10 Pc, zeta_vmr)` grid point:
+
+```bash
+python examples/luhman16b_yama/diagnose_milestone2_5a_f_cloud_grid.py \
+  --chip-indices 0,1,2,3 \
+  --f-min -0.25 \
+  --f-max 1.25 \
+  --f-count 151 \
+  --top-k 20
+```
+
+Run the shared-atmosphere joint retrieval:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_joint_chips.py \
+  --m2-5a \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.98 \
+  --max-tree-depth 11 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+Build the M2-5a joint products:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
+  --m2-5a \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --cloud-fraction-cmap afmhot \
+  --max-map-samples 1000
+```
+
+The `--m2-5a` preset reads grids named
+`data/milestone2_t0_vmr_cloud_grid_profiles_exomol_chip{chip}.npz`, writes
+samples to `results/milestone2_5a/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`,
+and writes products to `results/milestone2_5a`.

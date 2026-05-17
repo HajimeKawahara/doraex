@@ -14,6 +14,7 @@ if str(SRC) not in sys.path:
 
 from doraex.workflows.luhman16b_milestone2 import (  # noqa: E402
     load_milestone2_joint_free_t0_cloud_inputs,
+    load_milestone2_joint_free_t0_vmr_cloud_inputs,
     run_joint_free_t0_cloud_two_column_mcmc,
     save_joint_free_t0_cloud_two_column_samples,
 )
@@ -56,6 +57,11 @@ def parse_args():
         action="store_true",
         help="Use M2-4c grids with Yama-style per-chip mean normalization.",
     )
+    parser.add_argument(
+        "--m2-5a",
+        action="store_true",
+        help="Use shared-atmosphere T0/log10 Pc/zeta_vmr grids for Milestone 2-5a.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--num-warmup", type=int, default=2000)
     parser.add_argument("--num-samples", type=int, default=1500)
@@ -71,6 +77,9 @@ def parse_args():
     parser.add_argument("--log-p-cloud-min", type=float, default=-2.0)
     parser.add_argument("--log-p-cloud-max", type=float, default=2.0)
     parser.add_argument("--init-log-p-cloud", type=float, default=1.28)
+    parser.add_argument("--zeta-vmr-min", type=float, default=-0.5)
+    parser.add_argument("--zeta-vmr-max", type=float, default=0.5)
+    parser.add_argument("--init-zeta-vmr", type=float, default=0.0)
     parser.add_argument("--sigma-b-scale", type=float, default=0.1)
     parser.add_argument("--fix-ell-b", type=float, default=0.3)
     parser.add_argument(
@@ -108,30 +117,37 @@ def parse_args():
         default=True,
     )
     args = parser.parse_args()
-    if args.m2_4b or args.m2_4c or args.m2_4d:
+    if args.m2_4b or args.m2_4c or args.m2_4d or args.m2_5a:
         args.shared_atmosphere = True
         default_m24a_out = str(ROOT / "results" / "milestone2_4a")
         if args.out_dir == default_m24a_out:
-            if args.m2_4d:
+            if args.m2_5a:
+                milestone = "milestone2_5a"
+            elif args.m2_4d:
                 milestone = "milestone2_4d"
             elif args.m2_4c:
                 milestone = "milestone2_4c"
             else:
                 milestone = "milestone2_4b"
             args.out_dir = str(ROOT / "results" / milestone)
-    if args.m2_4c or args.m2_4d:
+    if args.m2_4c or args.m2_4d or args.m2_5a:
         default_template = str(
             ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip{chip}.npz"
         )
         if args.profile_grid_template == default_template:
+            grid_name = (
+                "milestone2_t0_vmr_cloud_grid_profiles_exomol_chip{chip}.npz"
+                if args.m2_5a
+                else "milestone2_t0_cloud_grid_profiles_exomol_chip{chip}.npz"
+            )
             args.profile_grid_template = str(
-                ROOT / "data" / "milestone2_t0_cloud_grid_profiles_exomol_chip{chip}.npz"
+                ROOT / "data" / grid_name
             )
         if args.init_t0 == 1215.0:
             args.init_t0 = 1219.0
         if args.init_log_p_cloud == 1.28:
             args.init_log_p_cloud = 1.45
-    if args.m2_4d:
+    if args.m2_4d or args.m2_5a:
         args.normalization_mode = "yama"
     return args
 
@@ -142,22 +158,42 @@ def main():
     args = parse_args()
     jax.config.update("jax_enable_x64", args.x64)
     profile_grid_template = None if args.smoke_test else args.profile_grid_template
-    (
-        chip_data_list,
-        geometry,
-        t0_grid,
-        log_p_cloud_grid,
-        clear_profile_grid,
-        cloudy_profile_grid,
-    ) = load_milestone2_joint_free_t0_cloud_inputs(
-        args.data_dir,
-        chip_indices=args.chip_indices,
-        profile_grid_template=profile_grid_template,
-        nside=args.nside,
-        smoke_test=args.smoke_test,
-        smoke_wavelength_step=args.smoke_wavelength_step,
-        smoke_phase_count=args.smoke_phase_count,
-    )
+    if args.m2_5a:
+        (
+            chip_data_list,
+            geometry,
+            t0_grid,
+            log_p_cloud_grid,
+            zeta_vmr_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+        ) = load_milestone2_joint_free_t0_vmr_cloud_inputs(
+            args.data_dir,
+            chip_indices=args.chip_indices,
+            profile_grid_template=profile_grid_template,
+            nside=args.nside,
+            smoke_test=args.smoke_test,
+            smoke_wavelength_step=args.smoke_wavelength_step,
+            smoke_phase_count=args.smoke_phase_count,
+        )
+    else:
+        (
+            chip_data_list,
+            geometry,
+            t0_grid,
+            log_p_cloud_grid,
+            clear_profile_grid,
+            cloudy_profile_grid,
+        ) = load_milestone2_joint_free_t0_cloud_inputs(
+            args.data_dir,
+            chip_indices=args.chip_indices,
+            profile_grid_template=profile_grid_template,
+            nside=args.nside,
+            smoke_test=args.smoke_test,
+            smoke_wavelength_step=args.smoke_wavelength_step,
+            smoke_phase_count=args.smoke_phase_count,
+        )
+        zeta_vmr_grid = None
 
     num_warmup = args.num_warmup
     num_samples = args.num_samples
@@ -177,6 +213,7 @@ def main():
         log_p_cloud_grid,
         clear_profile_grid,
         cloudy_profile_grid,
+        zeta_vmr_grid=zeta_vmr_grid,
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=args.num_chains,
@@ -185,8 +222,10 @@ def main():
         fixed_period=args.fixed_period,
         t0_bounds=(args.t0_min, args.t0_max),
         log_p_cloud_bounds=(args.log_p_cloud_min, args.log_p_cloud_max),
+        zeta_vmr_bounds=(args.zeta_vmr_min, args.zeta_vmr_max),
         init_t0=args.init_t0,
         init_log_p_cloud=args.init_log_p_cloud,
+        init_zeta_vmr=args.init_zeta_vmr,
         target_accept_prob=args.target_accept_prob,
         dense_mass=dense_mass,
         max_tree_depth=max_tree_depth,
@@ -221,6 +260,8 @@ def main():
         period_mode=args.period_mode,
         t0_bounds=(args.t0_min, args.t0_max),
         log_p_cloud_bounds=(args.log_p_cloud_min, args.log_p_cloud_max),
+        zeta_vmr_grid=zeta_vmr_grid,
+        zeta_vmr_bounds=(args.zeta_vmr_min, args.zeta_vmr_max),
         sigma_b_scale=args.sigma_b_scale,
         fixed_ell_b=fixed_ell_b,
         fix_geometry=args.fix_geometry_to_milestone1,
