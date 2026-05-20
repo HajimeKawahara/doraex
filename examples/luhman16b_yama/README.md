@@ -737,3 +737,71 @@ The `--m2-5a` preset reads grids named
 `data/milestone2_t0_vmr_cloud_grid_profiles_exomol_chip{chip}.npz`, writes
 samples to `results/milestone2_5a/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`,
 and writes products to `results/milestone2_5a`.
+
+## Milestone 2-5b
+
+Milestone 2-5b keeps the same clear/cloudy two-column definition as M2-5a,
+but also frees the shared power-law T-P slope `alpha`. The clear and cloudy
+columns still share `T(P)`, VMRs, and `logg`; the only physical endpoint
+difference is the gray cloud opacity in the cloudy column.
+
+Generate the ExoMol-consistent T0/alpha/log10 Pc/zeta_vmr grids:
+
+```bash
+for chip in 0 1 2 3; do
+  python examples/luhman16b_yama/generate_milestone2_t0_alpha_cloud_zeta_grid_profiles.py \
+    --chip-index ${chip} \
+    --opacity-cache-dir data/opacities/luhman16b_powerlaw \
+    --database-dir ~/data_mol/.database \
+    --t0-min 1000 \
+    --t0-max 1700 \
+    --t0-count 21 \
+    --alpha-min 0.05 \
+    --alpha-max 0.20 \
+    --alpha-count 9 \
+    --log-p-cloud-min -2.0 \
+    --log-p-cloud-max 2.0 \
+    --log-p-cloud-count 33 \
+    --zeta-vmr-min -0.5 \
+    --zeta-vmr-max 0.5 \
+    --zeta-vmr-count 11
+done
+```
+
+Run the shared-atmosphere joint retrieval:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_joint_chips.py \
+  --m2-5b \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.99 \
+  --max-tree-depth 12 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+Build the M2-5b joint products:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
+  --m2-5b \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --cloud-fraction-cmap afmhot \
+  --max-map-samples 1000
+```
+
+The `--m2-5b` preset reads grids named
+`data/milestone2_t0_alpha_vmr_cloud_grid_profiles_exomol_chip{chip}.npz`,
+writes samples to
+`results/milestone2_5b/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`,
+and writes products to `results/milestone2_5b`. The product diagnostics include
+`alpha` posterior summaries, prior-edge fractions, correlations with the
+shared atmospheric parameters and map scale, and cloud-fraction physicality
+metrics.

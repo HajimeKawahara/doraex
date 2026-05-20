@@ -75,6 +75,11 @@ def parse_args():
         action="store_true",
         help="Use Milestone 2-5a shared zeta_vmr atmosphere defaults.",
     )
+    parser.add_argument(
+        "--m2-5b",
+        action="store_true",
+        help="Use Milestone 2-5b shared alpha/zeta_vmr atmosphere defaults.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--max-map-samples", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
@@ -87,12 +92,14 @@ def parse_args():
     )
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
-    if args.m2_4b or args.m2_4c or args.m2_4d or args.m2_5a:
+    if args.m2_4b or args.m2_4c or args.m2_4d or args.m2_5a or args.m2_5b:
         default_samples = str(
             ROOT / "results" / "milestone2_4a" / "mcmc_joint_chips_free_t0_cloud.npz"
         )
         default_out = str(ROOT / "results" / "milestone2_4a")
-        if args.m2_5a:
+        if args.m2_5b:
+            milestone = "milestone2_5b"
+        elif args.m2_5a:
             milestone = "milestone2_5a"
         elif args.m2_4d:
             milestone = "milestone2_4d"
@@ -143,6 +150,35 @@ def _interpolate_3d(x_grid, y_grid, z_grid, profile_grid, x, y, z):
     return result
 
 
+def _interpolate_4d(w_grid, x_grid, y_grid, z_grid, profile_grid, w, x, y, z):
+    """Four-dimensional linear interpolation helper."""
+
+    w_grid = np.asarray(w_grid)
+    profile_grid = np.asarray(profile_grid)
+    w_index = np.searchsorted(w_grid, w, side="right") - 1
+    w_index = np.clip(w_index, 0, len(w_grid) - 2)
+    w_fraction = (w - w_grid[w_index]) / (w_grid[w_index + 1] - w_grid[w_index])
+    left = _interpolate_3d(
+        x_grid,
+        y_grid,
+        z_grid,
+        profile_grid[w_index],
+        x,
+        y,
+        z,
+    )
+    right = _interpolate_3d(
+        x_grid,
+        y_grid,
+        z_grid,
+        profile_grid[w_index + 1],
+        x,
+        y,
+        z,
+    )
+    return (1.0 - w_fraction) * left + w_fraction * right
+
+
 def _load_chip_data_list(args):
     chip_data_list = []
     for chip_index in args.chip_indices:
@@ -155,6 +191,16 @@ def _load_chip_data_list(args):
             )
         chip_data_list.append(chip_data)
     return chip_data_list
+
+
+def _safe_correlation(left, right):
+    left = np.asarray(left, dtype=float)
+    right = np.asarray(right, dtype=float)
+    if left.size < 2 or right.size < 2:
+        return None
+    if np.std(left) == 0.0 or np.std(right) == 0.0:
+        return None
+    return float(np.corrcoef(left, right)[0, 1])
 
 
 def _write_joint_diagnostics(path, samples, residuals, contrast_mean, cloud_fraction_mean):
@@ -183,6 +229,7 @@ def _write_joint_diagnostics(path, samples, residuals, contrast_mean, cloud_frac
     }
     for name in (
         "T0",
+        "alpha",
         "log_p_cloud",
         "zeta_vmr",
         "f_cloud",
@@ -199,6 +246,43 @@ def _write_joint_diagnostics(path, samples, residuals, contrast_mean, cloud_frac
             else:
                 diagnostics[f"{name}_median_by_chip"] = [
                     float(value) for value in np.median(values, axis=0)
+                ]
+            bounds_name = f"{name.lower()}_bounds"
+            if bounds_name in samples and values.ndim == 1:
+                bounds = np.asarray(samples[bounds_name], dtype=float)
+                edge = 0.05 * float(bounds[1] - bounds[0])
+                diagnostics[f"{name}_prior_lower"] = float(bounds[0])
+                diagnostics[f"{name}_prior_upper"] = float(bounds[1])
+                diagnostics[f"{name}_fraction_near_lower_edge"] = float(
+                    np.mean(values <= bounds[0] + edge)
+                )
+                diagnostics[f"{name}_fraction_near_upper_edge"] = float(
+                    np.mean(values >= bounds[1] - edge)
+                )
+    for left in ("T0", "alpha", "log_p_cloud", "zeta_vmr", "f_cloud", "sigma_b"):
+        if left not in samples:
+            continue
+        left_values = np.asarray(samples[left], dtype=float)
+        if left_values.ndim != 1:
+            continue
+        for right in ("T0", "alpha", "log_p_cloud", "zeta_vmr", "f_cloud", "sigma_b"):
+            if right <= left or right not in samples:
+                continue
+            right_values = np.asarray(samples[right], dtype=float)
+            if right_values.ndim != 1:
+                continue
+            diagnostics[f"corr_{left}_{right}"] = _safe_correlation(
+                left_values,
+                right_values,
+            )
+        for right in ("A", "sigma_d", "surface_scale"):
+            if right not in samples:
+                continue
+            right_values = np.asarray(samples[right], dtype=float)
+            if right_values.ndim == 2:
+                diagnostics[f"corr_{left}_{right}_by_chip"] = [
+                    _safe_correlation(left_values, right_values[:, chip])
+                    for chip in range(right_values.shape[1])
                 ]
                 diagnostics[f"{name}_q05_by_chip"] = [
                     float(value) for value in np.quantile(values, 0.05, axis=0)
@@ -227,6 +311,9 @@ def main():
     geometry = build_luhman16b_geometry(nside=args.nside)
     samples = dict(np.load(args.samples, allow_pickle=False))
     t0_grid = np.asarray(samples["t0_grid"])
+    alpha_grid = (
+        np.asarray(samples["alpha_grid"]) if "alpha_grid" in samples else None
+    )
     log_p_cloud_grid = np.asarray(samples["log_p_cloud_grid"])
     clear_profile_grid = np.asarray(samples["clear_profile_grid"])
     cloudy_profile_grid = np.asarray(samples["cloudy_profile_grid"])
@@ -245,6 +332,7 @@ def main():
             cloudy_profile_grid,
             samples,
             sample_indices=sample_indices,
+            alpha_grid=alpha_grid,
             zeta_vmr_grid=zeta_vmr_grid,
         )
     )
@@ -268,6 +356,7 @@ def main():
         cloudy_profile_grid,
         samples,
         contrast_mean,
+        alpha_grid=alpha_grid,
         zeta_vmr_grid=zeta_vmr_grid,
     )
     residuals = [np.asarray(chip.flux) - np.asarray(model) for chip, model in zip(chip_data_list, models)]
@@ -291,7 +380,30 @@ def main():
 
         t0_median = float(np.asarray(chip_samples[chip_position]["T0"]))
         log_p_median = float(np.asarray(chip_samples[chip_position]["log_p_cloud"]))
-        if zeta_vmr_grid is None:
+        if alpha_grid is not None:
+            alpha_median = float(np.asarray(chip_samples[chip_position]["alpha"]))
+            zeta_median = float(np.asarray(chip_samples[chip_position]["zeta_vmr"]))
+            clear_median = _interpolate_3d(
+                t0_grid[chip_position],
+                alpha_grid[chip_position],
+                zeta_vmr_grid[chip_position],
+                clear_profile_grid[chip_position],
+                t0_median,
+                alpha_median,
+                zeta_median,
+            )
+            cloudy_median = _interpolate_4d(
+                t0_grid[chip_position],
+                alpha_grid[chip_position],
+                log_p_cloud_grid[chip_position],
+                zeta_vmr_grid[chip_position],
+                cloudy_profile_grid[chip_position],
+                t0_median,
+                alpha_median,
+                log_p_median,
+                zeta_median,
+            )
+        elif zeta_vmr_grid is None:
             clear_median = _interpolate_1d(
                 t0_grid[chip_position],
                 clear_profile_grid[chip_position],

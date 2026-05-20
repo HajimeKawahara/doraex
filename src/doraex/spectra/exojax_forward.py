@@ -233,6 +233,36 @@ def save_t0_vmr_cloud_profile_grid(
     np.savez(path, **payload)
 
 
+def save_t0_alpha_vmr_cloud_profile_grid(
+    path,
+    wavelengths,
+    t0_grid,
+    alpha_grid,
+    log_p_cloud_grid,
+    zeta_vmr_grid,
+    clear_profile_grid,
+    cloudy_profile_grid,
+    metadata=None,
+):
+    """Save T0/alpha/VMR clear and T0/alpha/cloud/VMR cloudy profile grids."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "wavelengths": np.asarray(wavelengths),
+        "t0_grid": np.asarray(t0_grid),
+        "alpha_grid": np.asarray(alpha_grid),
+        "log_p_cloud_grid": np.asarray(log_p_cloud_grid),
+        "zeta_vmr_grid": np.asarray(zeta_vmr_grid),
+        "clear_profile_grid": np.asarray(clear_profile_grid),
+        "cloudy_profile_grid": np.asarray(cloudy_profile_grid),
+    }
+    if metadata:
+        for key, value in metadata.items():
+            payload[key] = np.asarray(value)
+    np.savez(path, **payload)
+
+
 def load_two_column_profiles(path, expected_wavelengths=None):
     """Load fixed clear/cloudy profiles from an NPZ file.
 
@@ -308,6 +338,25 @@ def load_t0_vmr_cloud_profile_grid(path, expected_wavelengths=None):
         raise ValueError("Profile wavelength grid does not match the data wavelength grid.")
     return (
         profiles["t0_grid"],
+        profiles["log_p_cloud_grid"],
+        profiles["zeta_vmr_grid"],
+        profiles["clear_profile_grid"],
+        profiles["cloudy_profile_grid"],
+    )
+
+
+def load_t0_alpha_vmr_cloud_profile_grid(path, expected_wavelengths=None):
+    """Load T0/alpha/VMR clear and T0/alpha/cloud/VMR cloudy grids."""
+
+    profiles = np.load(path)
+    wavelengths = profiles["wavelengths"]
+    if expected_wavelengths is not None and not np.allclose(
+        wavelengths, np.asarray(expected_wavelengths)
+    ):
+        raise ValueError("Profile wavelength grid does not match the data wavelength grid.")
+    return (
+        profiles["t0_grid"],
+        profiles["alpha_grid"],
         profiles["log_p_cloud_grid"],
         profiles["zeta_vmr_grid"],
         profiles["clear_profile_grid"],
