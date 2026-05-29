@@ -11,8 +11,15 @@ from doraex.data.luhman16b import load_luhman16b_chip, subset_chip_data
 from doraex.geometry.healpix import angular_distance_matrix, healpix_pixel_angles
 from doraex.geometry.limb_darkening import kipping_q_to_u
 from doraex.inference.map_posterior import conditional_map_posterior
-from doraex.operators.design_matrix import two_column_operator_from_times
-from doraex.priors.spherical_gp import add_diagonal_jitter, squared_exponential_covariance
+from doraex.operators.design_matrix import (
+    linear_profile_operator_from_times,
+    two_column_operator_from_times,
+)
+from doraex.priors.spherical_gp import (
+    add_diagonal_jitter,
+    project_zero_mean_covariance,
+    squared_exponential_covariance,
+)
 from doraex.spectra.exojax_forward import (
     load_cloud_profile_grid,
     load_t0_alpha_vmr_cloud_profile_grid,
@@ -980,6 +987,7 @@ def make_joint_free_t0_cloud_nuts_kernel(
     init_zeta_vmr=0.0,
     shared_atmosphere=False,
     normalization_mode="surface_scale",
+    column_mode="clear_cloud",
     sample_zeta_vmr=False,
     sample_alpha=False,
 ):
@@ -988,14 +996,20 @@ def make_joint_free_t0_cloud_nuts_kernel(
     from numpyro.infer import NUTS, init_to_value
 
     atmosphere_shape = () if shared_atmosphere else (n_chip,)
+    pressure_name = "log_p_mid" if column_mode == "double_cloud" else "log_p_cloud"
+    fraction_name = "h_high" if column_mode == "double_cloud" else "f_cloud"
+    uses_fraction_map = column_mode != "pressure_perturbation"
     init_values = {
         "T0": jnp.full(atmosphere_shape, init_t0),
-        "log_p_cloud": jnp.full(atmosphere_shape, init_log_p_cloud),
+        pressure_name: jnp.full(atmosphere_shape, init_log_p_cloud),
         "log_w": jnp.zeros((n_chip, n_phase)),
-        "f_cloud": jnp.full(atmosphere_shape, 0.5),
         "sigma_d": jnp.full((n_chip,), 0.039),
-        "sigma_b": 0.05,
     }
+    if uses_fraction_map:
+        init_values[fraction_name] = jnp.full(atmosphere_shape, 0.5)
+        init_values["sigma_b"] = 0.05
+    else:
+        init_values["sigma_log_p"] = 0.03
     if normalization_mode == "surface_scale":
         init_values["surface_scale"] = jnp.full((n_chip,), 0.0077)
     elif normalization_mode == "yama":
@@ -1058,6 +1072,10 @@ def run_joint_free_t0_cloud_two_column_mcmc(
     fixed_q2=0.59,
     shared_atmosphere=False,
     normalization_mode="surface_scale",
+    column_mode="clear_cloud",
+    fixed_cloud_delta=1.0,
+    pressure_derivative_step=0.025,
+    zero_mean_pressure_map=False,
     progress_bar=True,
 ):
     """Run joint multi-chip grid-based Milestone 2-4 retrieval."""
@@ -1076,6 +1094,37 @@ def run_joint_free_t0_cloud_two_column_mcmc(
     zeta_vmr_grid = None if zeta_vmr_grid is None else jnp.asarray(zeta_vmr_grid)
     clear_profile_grid = jnp.asarray(clear_profile_grid)
     cloudy_profile_grid = jnp.asarray(cloudy_profile_grid)
+    if column_mode not in ("clear_cloud", "double_cloud", "pressure_perturbation"):
+        raise ValueError(
+            "column_mode must be 'clear_cloud', 'double_cloud', or "
+            "'pressure_perturbation'"
+        )
+    if column_mode == "double_cloud":
+        log_p_grid_np = np.asarray(log_p_cloud_grid)
+        grid_min = float(np.min(log_p_grid_np))
+        grid_max = float(np.max(log_p_grid_np))
+        deep_bound = log_p_cloud_bounds[1] + 0.5 * fixed_cloud_delta
+        high_bound = log_p_cloud_bounds[0] - 0.5 * fixed_cloud_delta
+        if high_bound < grid_min or deep_bound > grid_max:
+            raise ValueError(
+                "double-cloud endpoints must be covered by log_p_cloud_grid: "
+                f"mid_bounds={log_p_cloud_bounds}, fixed_cloud_delta={fixed_cloud_delta}, "
+                f"grid=({grid_min}, {grid_max})"
+            )
+    if column_mode == "pressure_perturbation":
+        log_p_grid_np = np.asarray(log_p_cloud_grid)
+        grid_min = float(np.min(log_p_grid_np))
+        grid_max = float(np.max(log_p_grid_np))
+        lower_bound = log_p_cloud_bounds[0] - pressure_derivative_step
+        upper_bound = log_p_cloud_bounds[1] + pressure_derivative_step
+        if lower_bound < grid_min or upper_bound > grid_max:
+            raise ValueError(
+                "pressure-perturbation finite-difference points must be covered "
+                "by log_p_cloud_grid: "
+                f"log_p_bounds={log_p_cloud_bounds}, "
+                f"pressure_derivative_step={pressure_derivative_step}, "
+                f"grid=({grid_min}, {grid_max})"
+            )
 
     def model(data_observed):
         return joint_free_t0_cloud_two_column_doppler_model(
@@ -1106,6 +1155,10 @@ def run_joint_free_t0_cloud_two_column_mcmc(
             fixed_q2=fixed_q2,
             shared_atmosphere=shared_atmosphere,
             normalization_mode=normalization_mode,
+            column_mode=column_mode,
+            fixed_cloud_delta=fixed_cloud_delta,
+            pressure_derivative_step=pressure_derivative_step,
+            zero_mean_pressure_map=zero_mean_pressure_map,
         )
 
     kernel = make_joint_free_t0_cloud_nuts_kernel(
@@ -1125,6 +1178,7 @@ def run_joint_free_t0_cloud_two_column_mcmc(
         init_zeta_vmr=init_zeta_vmr,
         shared_atmosphere=shared_atmosphere,
         normalization_mode=normalization_mode,
+        column_mode=column_mode,
         sample_zeta_vmr=zeta_vmr_grid is not None,
         sample_alpha=alpha_grid is not None,
     )
@@ -1285,6 +1339,10 @@ def save_joint_free_t0_cloud_two_column_samples(
     fix_geometry=True,
     shared_atmosphere=False,
     normalization_mode="surface_scale",
+    column_mode="clear_cloud",
+    fixed_cloud_delta=1.0,
+    pressure_derivative_step=0.025,
+    zero_mean_pressure_map=False,
 ):
     """Save joint multi-chip T0/cloud samples and profile metadata."""
 
@@ -1313,8 +1371,14 @@ def save_joint_free_t0_cloud_two_column_samples(
             "fix_geometry": np.asarray(fix_geometry),
             "shared_atmosphere": np.asarray(shared_atmosphere),
             "normalization_mode": np.asarray(normalization_mode),
+            "column_mode": np.asarray(column_mode),
+            "fixed_cloud_delta": np.asarray(fixed_cloud_delta),
+            "pressure_derivative_step": np.asarray(pressure_derivative_step),
+            "zero_mean_pressure_map": np.asarray(zero_mean_pressure_map),
         }
     )
+    if column_mode == "double_cloud":
+        save_data["log_p_mid_bounds"] = np.asarray(log_p_cloud_bounds)
     if alpha_grid is not None:
         save_data["alpha_grid"] = np.asarray(alpha_grid)
     if zeta_vmr_grid is not None:
@@ -1370,18 +1434,32 @@ def _fixed_sample_at(samples, index):
         "A",
         "sigma_d",
         "sigma_b",
+        "sigma_log_p",
         "ell_b",
         "P",
         "log_p_cloud",
+        "log_p_mid",
         "T0",
         "alpha",
         "zeta_vmr",
+        "h_high",
     }
-    return {
+    result = {
         name: jnp.asarray(samples[name])[index]
         for name in sample_names
         if name in samples
     }
+    if "fixed_cloud_delta" in samples:
+        result["fixed_cloud_delta"] = jnp.asarray(samples["fixed_cloud_delta"])
+    if "pressure_derivative_step" in samples:
+        result["pressure_derivative_step"] = jnp.asarray(
+            samples["pressure_derivative_step"]
+        )
+    if "zero_mean_pressure_map" in samples:
+        result["zero_mean_pressure_map"] = jnp.asarray(
+            samples["zero_mean_pressure_map"]
+        )
+    return result
 
 
 def two_column_operator_from_sample(
@@ -1409,7 +1487,41 @@ def two_column_operator_from_sample(
         jnp.asarray(chip_data.wavelengths),
         jnp.asarray(clear_profile),
         jnp.asarray(cloudy_profile),
-        jnp.asarray(sample["f_cloud"]),
+        jnp.asarray(sample["h_high"] if "h_high" in sample else sample["f_cloud"]),
+        weights=weights,
+    )
+    if "A" in sample:
+        norm = jnp.asarray(sample["A"]) * jnp.mean(baseline)
+        return baseline / norm, contrast_matrix / norm
+    surface_scale = jnp.asarray(sample.get("surface_scale", 1.0))
+    return surface_scale * baseline, surface_scale * contrast_matrix
+
+
+def linear_profile_operator_from_sample(
+    chip_data,
+    geometry,
+    base_profile,
+    contrast_profile,
+    sample,
+):
+    """Build ``(baseline, W_delta)`` for a linear local spectral response."""
+
+    inclination = jnp.arccos(jnp.asarray(sample["cosi"]))
+    u1 = jnp.asarray(sample.get("u1", kipping_q_to_u(sample["q1"], sample["q2"])[0]))
+    u2 = jnp.asarray(sample.get("u2", kipping_q_to_u(sample["q1"], sample["q2"])[1]))
+    weights = jnp.exp(jnp.asarray(sample["log_w"]))
+    baseline, contrast_matrix = linear_profile_operator_from_times(
+        geometry.theta,
+        geometry.phi,
+        jnp.asarray(sample["v"]),
+        inclination,
+        u1,
+        u2,
+        jnp.asarray(chip_data.obs_times),
+        jnp.asarray(sample["P"]),
+        jnp.asarray(chip_data.wavelengths),
+        jnp.asarray(base_profile),
+        jnp.asarray(contrast_profile),
         weights=weights,
     )
     if "A" in sample:
@@ -1456,6 +1568,9 @@ def two_column_operator_from_free_t0_cloud_sample(
 ):
     """Build ``(baseline, W_delta)`` for one grid-based T0/cloud sample."""
 
+    pressure_perturbation = "sigma_log_p" in sample
+    double_cloud = "h_high" in sample
+    log_p_name = "log_p_mid" if double_cloud else "log_p_cloud"
     if alpha_grid is not None:
         clear_profile = _interpolate_profile_grid_3d(
             t0_grid,
@@ -1466,30 +1581,148 @@ def two_column_operator_from_free_t0_cloud_sample(
             sample["alpha"],
             sample["zeta_vmr"],
         )
-        cloudy_profile = _interpolate_profile_grid_4d(
-            t0_grid,
-            alpha_grid,
-            log_p_cloud_grid,
-            zeta_vmr_grid,
-            cloudy_profile_grid,
-            sample["T0"],
-            sample["alpha"],
-            sample["log_p_cloud"],
-            sample["zeta_vmr"],
-        )
+        if pressure_perturbation:
+            pressure_derivative_step = float(
+                np.asarray(sample.get("pressure_derivative_step", 0.025))
+            )
+            base_profile = _interpolate_profile_grid_4d(
+                t0_grid,
+                alpha_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample["alpha"],
+                sample[log_p_name],
+                sample["zeta_vmr"],
+            )
+            deeper_profile = _interpolate_profile_grid_4d(
+                t0_grid,
+                alpha_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample["alpha"],
+                sample[log_p_name] + pressure_derivative_step,
+                sample["zeta_vmr"],
+            )
+            higher_profile = _interpolate_profile_grid_4d(
+                t0_grid,
+                alpha_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample["alpha"],
+                sample[log_p_name] - pressure_derivative_step,
+                sample["zeta_vmr"],
+            )
+            contrast_profile = (
+                deeper_profile - higher_profile
+            ) / (2.0 * pressure_derivative_step)
+        elif double_cloud:
+            fixed_cloud_delta = float(np.asarray(sample.get("fixed_cloud_delta", 1.0)))
+            clear_profile = _interpolate_profile_grid_4d(
+                t0_grid,
+                alpha_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample["alpha"],
+                sample[log_p_name] + 0.5 * fixed_cloud_delta,
+                sample["zeta_vmr"],
+            )
+            cloudy_profile = _interpolate_profile_grid_4d(
+                t0_grid,
+                alpha_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample["alpha"],
+                sample[log_p_name] - 0.5 * fixed_cloud_delta,
+                sample["zeta_vmr"],
+            )
+            base_profile = None
+            contrast_profile = None
+        else:
+            cloudy_profile = _interpolate_profile_grid_4d(
+                t0_grid,
+                alpha_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample["alpha"],
+                sample[log_p_name],
+                sample["zeta_vmr"],
+            )
+            base_profile = None
+            contrast_profile = None
     elif zeta_vmr_grid is None:
         clear_profile = _interpolate_profile_grid(
             t0_grid,
             clear_profile_grid,
             sample["T0"],
         )
-        cloudy_profile = _interpolate_profile_grid_2d(
-            t0_grid,
-            log_p_cloud_grid,
-            cloudy_profile_grid,
-            sample["T0"],
-            sample["log_p_cloud"],
-        )
+        if pressure_perturbation:
+            pressure_derivative_step = float(
+                np.asarray(sample.get("pressure_derivative_step", 0.025))
+            )
+            base_profile = _interpolate_profile_grid_2d(
+                t0_grid,
+                log_p_cloud_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name],
+            )
+            deeper_profile = _interpolate_profile_grid_2d(
+                t0_grid,
+                log_p_cloud_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name] + pressure_derivative_step,
+            )
+            higher_profile = _interpolate_profile_grid_2d(
+                t0_grid,
+                log_p_cloud_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name] - pressure_derivative_step,
+            )
+            contrast_profile = (
+                deeper_profile - higher_profile
+            ) / (2.0 * pressure_derivative_step)
+        elif double_cloud:
+            fixed_cloud_delta = float(np.asarray(sample.get("fixed_cloud_delta", 1.0)))
+            clear_profile = _interpolate_profile_grid_2d(
+                t0_grid,
+                log_p_cloud_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name] + 0.5 * fixed_cloud_delta,
+            )
+            cloudy_profile = _interpolate_profile_grid_2d(
+                t0_grid,
+                log_p_cloud_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name] - 0.5 * fixed_cloud_delta,
+            )
+            base_profile = None
+            contrast_profile = None
+        else:
+            cloudy_profile = _interpolate_profile_grid_2d(
+                t0_grid,
+                log_p_cloud_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name],
+            )
+            base_profile = None
+            contrast_profile = None
     else:
         clear_profile = _interpolate_profile_grid_2d(
             t0_grid,
@@ -1498,14 +1731,81 @@ def two_column_operator_from_free_t0_cloud_sample(
             sample["T0"],
             sample["zeta_vmr"],
         )
-        cloudy_profile = _interpolate_profile_grid_3d(
-            t0_grid,
-            log_p_cloud_grid,
-            zeta_vmr_grid,
-            cloudy_profile_grid,
-            sample["T0"],
-            sample["log_p_cloud"],
-            sample["zeta_vmr"],
+        if pressure_perturbation:
+            pressure_derivative_step = float(
+                np.asarray(sample.get("pressure_derivative_step", 0.025))
+            )
+            base_profile = _interpolate_profile_grid_3d(
+                t0_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name],
+                sample["zeta_vmr"],
+            )
+            deeper_profile = _interpolate_profile_grid_3d(
+                t0_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name] + pressure_derivative_step,
+                sample["zeta_vmr"],
+            )
+            higher_profile = _interpolate_profile_grid_3d(
+                t0_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name] - pressure_derivative_step,
+                sample["zeta_vmr"],
+            )
+            contrast_profile = (
+                deeper_profile - higher_profile
+            ) / (2.0 * pressure_derivative_step)
+        elif double_cloud:
+            fixed_cloud_delta = float(np.asarray(sample.get("fixed_cloud_delta", 1.0)))
+            clear_profile = _interpolate_profile_grid_3d(
+                t0_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name] + 0.5 * fixed_cloud_delta,
+                sample["zeta_vmr"],
+            )
+            cloudy_profile = _interpolate_profile_grid_3d(
+                t0_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name] - 0.5 * fixed_cloud_delta,
+                sample["zeta_vmr"],
+            )
+            base_profile = None
+            contrast_profile = None
+        else:
+            cloudy_profile = _interpolate_profile_grid_3d(
+                t0_grid,
+                log_p_cloud_grid,
+                zeta_vmr_grid,
+                cloudy_profile_grid,
+                sample["T0"],
+                sample[log_p_name],
+                sample["zeta_vmr"],
+            )
+            base_profile = None
+            contrast_profile = None
+    if pressure_perturbation:
+        return linear_profile_operator_from_sample(
+            chip_data,
+            geometry,
+            base_profile,
+            contrast_profile,
+            sample,
         )
     return two_column_operator_from_sample(
         chip_data,
@@ -1524,7 +1824,9 @@ def _chip_sample(sample, chip_position):
         "T0",
         "alpha",
         "log_p_cloud",
+        "log_p_mid",
         "f_cloud",
+        "h_high",
         "surface_scale",
         "zeta_vmr",
         "A",
@@ -1590,14 +1892,14 @@ def conditional_contrast_map_for_sample(
         cloudy_profile,
         sample,
     )
-    prior_covariance = add_diagonal_jitter(
-        squared_exponential_covariance(
-            geometry.distance_matrix,
-            jnp.asarray(sample["sigma_b"]),
-            jnp.asarray(sample["ell_b"]),
-        ),
-        jitter=gp_jitter,
+    prior_covariance = squared_exponential_covariance(
+        geometry.distance_matrix,
+        jnp.asarray(sample["sigma_b"]),
+        jnp.asarray(sample["ell_b"]),
     )
+    if bool(np.asarray(sample.get("zero_mean_pressure_map", False))):
+        prior_covariance = project_zero_mean_covariance(prior_covariance)
+    prior_covariance = add_diagonal_jitter(prior_covariance, jitter=gp_jitter)
     prior_mean = jnp.zeros(contrast_matrix.shape[1])
     noise_variance = (
         jnp.asarray(sample["sigma_d"]) ** 2 * jnp.ones(contrast_matrix.shape[0])
@@ -1925,6 +2227,7 @@ def compute_joint_free_t0_cloud_contrast_map_moments(
     """Compute shared contrast-map moments for joint multi-chip runs."""
 
     sample_count = len(np.asarray(samples["sigma_b"]))
+    uses_fraction_map = "f_cloud" in samples or "h_high" in samples
     if sample_indices is None:
         sample_indices = np.arange(sample_count)
     else:
@@ -1932,7 +2235,7 @@ def compute_joint_free_t0_cloud_contrast_map_moments(
 
     conditional_means = []
     conditional_diag_sum = jnp.zeros(geometry.theta.shape[0])
-    f_cloud_values = []
+    mean_fraction_values = []
     for index in sample_indices:
         sample = _fixed_sample_at(samples, int(index))
         mean, covariance = conditional_contrast_map_for_joint_free_t0_cloud_sample(
@@ -1948,7 +2251,14 @@ def compute_joint_free_t0_cloud_contrast_map_moments(
         )
         conditional_means.append(mean)
         conditional_diag_sum = conditional_diag_sum + jnp.diag(covariance)
-        f_cloud_values.append(jnp.asarray(sample["f_cloud"]))
+        if uses_fraction_map:
+            mean_fraction_values.append(
+                jnp.asarray(
+                    sample["h_high"] if "h_high" in sample else sample["f_cloud"]
+                )
+            )
+        else:
+            mean_fraction_values.append(jnp.asarray(0.0))
 
     mean_stack = jnp.stack(conditional_means, axis=0)
     contrast_mean = jnp.mean(mean_stack, axis=0)
@@ -1956,9 +2266,9 @@ def compute_joint_free_t0_cloud_contrast_map_moments(
     between = jnp.mean((mean_stack - contrast_mean[None, :]) ** 2, axis=0)
     contrast_variance = within + between
 
-    f_cloud_stack = jnp.stack(f_cloud_values, axis=0)
-    if f_cloud_stack.ndim == 1:
-        cloud_fraction_samples = f_cloud_stack[:, None] + mean_stack
+    mean_fraction_stack = jnp.stack(mean_fraction_values, axis=0)
+    if mean_fraction_stack.ndim == 1:
+        cloud_fraction_samples = mean_fraction_stack[:, None] + mean_stack
         cloud_fraction_mean = jnp.mean(cloud_fraction_samples, axis=0)
         cloud_fraction_variance = (
             jnp.mean(
@@ -1968,7 +2278,7 @@ def compute_joint_free_t0_cloud_contrast_map_moments(
             + within
         )
     else:
-        cloud_fraction_samples = f_cloud_stack[:, :, None] + mean_stack[:, None, :]
+        cloud_fraction_samples = mean_fraction_stack[:, :, None] + mean_stack[:, None, :]
         cloud_fraction_mean = jnp.mean(cloud_fraction_samples, axis=0)
         cloud_fraction_variance = (
             jnp.mean(
@@ -1998,6 +2308,7 @@ def fixed_two_column_median_sample(samples):
         "log_p_cloud_grid",
         "cloudy_profile_grid",
         "log_p_cloud_bounds",
+        "log_p_mid_bounds",
         "t0_grid",
         "alpha_grid",
         "clear_profile_grid",
@@ -2005,12 +2316,26 @@ def fixed_two_column_median_sample(samples):
         "alpha_bounds",
         "zeta_vmr_grid",
         "zeta_vmr_bounds",
+        "column_mode",
+        "normalization_mode",
+        "pressure_derivative_step",
+        "zero_mean_pressure_map",
     }
     for name, values in samples.items():
         array = np.asarray(values)
         if array.ndim == 0 or name in skip_names:
             continue
         result[name] = jnp.asarray(np.median(array, axis=0))
+    if "fixed_cloud_delta" in samples:
+        result["fixed_cloud_delta"] = jnp.asarray(samples["fixed_cloud_delta"])
+    if "pressure_derivative_step" in samples:
+        result["pressure_derivative_step"] = jnp.asarray(
+            samples["pressure_derivative_step"]
+        )
+    if "zero_mean_pressure_map" in samples:
+        result["zero_mean_pressure_map"] = jnp.asarray(
+            samples["zero_mean_pressure_map"]
+        )
     if "u1" not in result or "u2" not in result:
         result["u1"], result["u2"] = kipping_q_to_u(result["q1"], result["q2"])
     return result

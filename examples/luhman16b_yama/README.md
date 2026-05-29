@@ -805,3 +805,177 @@ and writes products to `results/milestone2_5b`. The product diagnostics include
 `alpha` posterior summaries, prior-edge fractions, correlations with the
 shared atmospheric parameters and map scale, and cloud-fraction physicality
 metrics.
+
+## Milestone 3-1
+
+Milestone 3-1 starts the double-cloud hypothesis. It keeps the shared
+atmosphere from M2-5b (`T0`, `alpha`, and `zeta_vmr`) and replaces the
+clear/cloud endpoints with two cloudy endpoints separated in cloud pressure:
+
+```text
+s_deep = s_cld(T0, alpha, log_p_mid + fixed_cloud_delta / 2, zeta_vmr)
+s_high = s_cld(T0, alpha, log_p_mid - fixed_cloud_delta / 2, zeta_vmr)
+s_j = (1 - h_j) s_deep + h_j s_high
+h_j = h_high + b_j
+```
+
+The contrast map is still linear and analytically marginalized. The sampled
+surface mean `h_high` is the high-cloud fraction, while `b_j` is the
+high-cloud contrast map. The M3-1 preset uses the M2-5b cloudy grids and fixes
+`fixed_cloud_delta = 1.0 dex` by default, so `log_p_mid` is sampled over
+`[-1.5, 1.5]` to keep both cloudy endpoints inside the `[-2, 2]` grid.
+
+Run the double-cloud shared-atmosphere retrieval:
+
+```bash
+python examples/luhman16b_yama/run_milestone2_joint_chips.py \
+  --m3-1 \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.99 \
+  --max-tree-depth 12 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+Build the M3-1 joint products:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
+  --m3-1 \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --cloud-fraction-cmap afmhot \
+  --max-map-samples 1000
+```
+
+The preset writes samples to
+`results/milestone3_1/mcmc_joint_chips_free_t0_cloud_shared_atmosphere.npz`
+and products to `results/milestone3_1`. The high-cloud fraction products use
+`high_cloud_fraction_*` filenames to distinguish them from the M2 clear/cloud
+cloud-fraction maps.
+
+Run the small-delta sensitivity chains in one command:
+
+```bash
+python examples/luhman16b_yama/run_milestone3_delta_sensitivity.py \
+  --delta-values 0.03,0.1,0.3 \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.99 \
+  --max-tree-depth 12 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --sigma-b-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+This writes one subdirectory per fixed cloud-pressure separation under
+`results/milestone3_1_delta_sensitivity/`, for example
+`delta0p030/`, `delta0p100/`, and `delta0p300/`.
+
+## Milestone 4-1
+
+Milestone 4-1 replaces the bounded high-cloud fraction map with a cloud-pressure
+perturbation map. The local cloudy spectrum is expanded around a shared cloud
+pressure:
+
+```text
+log_p_cloud,j = log_p_cloud + q_j
+q ~ GP(0, sigma_log_p^2 K)
+s_j ~= s(log_p_cloud) + q_j * ds/dlog_p_cloud
+```
+
+The first implementation computes `ds/dlog_p_cloud` with a central finite
+difference on the precomputed cloudy profile grid:
+
+```text
+ds/dlog_p_cloud ~= [
+  s(log_p_cloud + pressure_derivative_step)
+  - s(log_p_cloud - pressure_derivative_step)
+] / (2 * pressure_derivative_step)
+```
+
+This keeps the same analytically marginalized linear-Gaussian map structure,
+but the map amplitude `sigma_log_p` is now a cloud-pressure variation in dex
+instead of a cloud-fraction contrast.
+
+Run the finite-difference pressure-variation retrieval:
+
+```bash
+python examples/luhman16b_yama/run_milestone4_pressure_variation.py \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.99 \
+  --max-tree-depth 12 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --pressure-derivative-step 0.025 \
+  --sigma-log-p-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+The script uses the M2-5b ExoMol-consistent grids by default and writes samples
+to `results/milestone4_1/mcmc_joint_chips_pressure_variation_shared_atmosphere.npz`.
+
+Milestone 4-2 uses the same finite-difference pressure response, but projects
+the pressure-perturbation GP prior onto the zero-mean map subspace. This makes
+`log_p_cloud` the global mean cloud pressure and the map `q_j` a pure
+pixel-level deviation:
+
+```bash
+python examples/luhman16b_yama/run_milestone4_pressure_variation.py \
+  --m4-2 \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --num-warmup 2000 \
+  --num-samples 1500 \
+  --target-accept-prob 0.99 \
+  --max-tree-depth 12 \
+  --period-mode fixed \
+  --fixed-period 4.83 \
+  --pressure-derivative-step 0.025 \
+  --sigma-log-p-scale 0.1 \
+  --fix-ell-b 0.3 \
+  --fix-geometry-to-milestone1
+```
+
+The M4-2 preset writes samples to
+`results/milestone4_2/mcmc_joint_chips_pressure_variation_shared_atmosphere.npz`.
+Build its products with:
+
+```bash
+python examples/luhman16b_yama/make_milestone2_joint_chip_products.py \
+  --m4-2 \
+  --chip-indices 0,1,2,3 \
+  --nside 8 \
+  --max-map-samples 1000
+```
+
+After the pressure-map products are available, evaluate the finite-difference
+linearization against exact cloudy spectra interpolated at every pixel pressure:
+
+```bash
+python examples/luhman16b_yama/evaluate_milestone4_pressure_linearization.py \
+  --chip-indices 0,1,2,3 \
+  --samples results/milestone4_2/mcmc_joint_chips_pressure_variation_shared_atmosphere.npz \
+  --product-dir results/milestone4_2 \
+  --nside 8
+```
+
+The evaluator writes `pressure_linearization_diagnostics.json` and, by default,
+per-chip exact, linearized, and difference arrays. If the reconstructed
+pixel-pressure map extends outside the precomputed pressure grid, rerun with
+`--clip-out-of-grid` to measure the clipped-grid discrepancy while keeping the
+reported out-of-grid pixel fraction.

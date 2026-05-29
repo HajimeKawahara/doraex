@@ -223,6 +223,63 @@ def two_column_operator_from_angles(
         1.0 - mean_cloud_fraction
     ) * clear_profile + mean_cloud_fraction * cloudy_profile
     delta_profile = cloudy_profile - clear_profile
+    return linear_profile_operator_from_angles(
+        theta,
+        phi,
+        vrot,
+        inclination,
+        u1,
+        u2,
+        phases,
+        wavelengths,
+        base_profile,
+        delta_profile,
+        weights=weights,
+        pixel_area=pixel_area,
+    )
+
+
+def linear_profile_operator_from_angles(
+    theta,
+    phi,
+    vrot,
+    inclination,
+    u1,
+    u2,
+    phases,
+    wavelengths,
+    base_profile,
+    contrast_profile,
+    weights=None,
+    pixel_area=1.0,
+):
+    """Build a Doppler-retrieval operator for a linear local spectrum.
+
+    The local spectrum is parameterized as
+    ``s_j = base_profile + b_j * contrast_profile``. This preserves the
+    analytically marginalized Gaussian map problem for any contrast coordinate
+    whose first-order spectral response is represented by ``contrast_profile``.
+
+    Args:
+        theta: Pixel colatitudes in the co-rotating frame, in radians.
+        phi: Pixel longitudes in the co-rotating frame, in radians.
+        vrot: Equatorial rotation velocity, in km/s.
+        inclination: Spin inclination angle in radians.
+        u1: First quadratic limb-darkening coefficient.
+        u2: Second quadratic limb-darkening coefficient.
+        phases: Rotational phases in cycles.
+        wavelengths: One-dimensional wavelength grid.
+        base_profile: Rest-frame local spectrum for the uniform baseline
+            atmosphere, sampled on ``wavelengths``.
+        contrast_profile: Rest-frame local spectral response to a unit map
+            perturbation, sampled on ``wavelengths``.
+        weights: Optional per-phase multiplicative weights.
+        pixel_area: Optional equal-area pixel solid-angle factor.
+
+    Returns:
+        A tuple ``(m0, W_delta)`` for the flattened baseline spectrum and the
+        contrast-map design matrix.
+    """
 
     base_matrix = full_design_matrix_from_angles(
         theta,
@@ -246,7 +303,7 @@ def two_column_operator_from_angles(
         u2,
         phases,
         wavelengths,
-        delta_profile,
+        contrast_profile,
         weights=weights,
         pixel_area=pixel_area,
     )
@@ -310,6 +367,41 @@ def two_column_operator_from_times(
         clear_profile,
         cloudy_profile,
         mean_cloud_fraction,
+        weights=weights,
+        pixel_area=pixel_area,
+    )
+
+
+def linear_profile_operator_from_times(
+    theta,
+    phi,
+    vrot,
+    inclination,
+    u1,
+    u2,
+    obs_times,
+    period,
+    wavelengths,
+    base_profile,
+    contrast_profile,
+    weights=None,
+    t0=0.0,
+    pixel_area=1.0,
+):
+    """Build a linear-profile Doppler operator from observation times."""
+
+    phases = (jnp.asarray(obs_times) - t0) / period
+    return linear_profile_operator_from_angles(
+        theta,
+        phi,
+        vrot,
+        inclination,
+        u1,
+        u2,
+        phases,
+        wavelengths,
+        base_profile,
+        contrast_profile,
         weights=weights,
         pixel_area=pixel_area,
     )

@@ -68,6 +68,11 @@ def parse_args():
         action="store_true",
         help="Use shared-atmosphere T0/alpha/log10 Pc/zeta_vmr grids for M2-5b.",
     )
+    parser.add_argument(
+        "--m3-1",
+        action="store_true",
+        help="Use double-cloud endpoints with shared T0/alpha/log10 P_mid/zeta_vmr.",
+    )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--num-warmup", type=int, default=2000)
     parser.add_argument("--num-samples", type=int, default=1500)
@@ -86,6 +91,25 @@ def parse_args():
     parser.add_argument("--log-p-cloud-min", type=float, default=-2.0)
     parser.add_argument("--log-p-cloud-max", type=float, default=2.0)
     parser.add_argument("--init-log-p-cloud", type=float, default=1.28)
+    parser.add_argument(
+        "--log-p-mid-min",
+        type=float,
+        dest="log_p_cloud_min",
+        default=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--log-p-mid-max",
+        type=float,
+        dest="log_p_cloud_max",
+        default=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--init-log-p-mid",
+        type=float,
+        dest="init_log_p_cloud",
+        default=argparse.SUPPRESS,
+    )
+    parser.add_argument("--fixed-cloud-delta", type=float, default=1.0)
     parser.add_argument("--zeta-vmr-min", type=float, default=-0.5)
     parser.add_argument("--zeta-vmr-max", type=float, default=0.5)
     parser.add_argument("--init-zeta-vmr", type=float, default=0.0)
@@ -126,11 +150,20 @@ def parse_args():
         default=True,
     )
     args = parser.parse_args()
-    if args.m2_4b or args.m2_4c or args.m2_4d or args.m2_5a or args.m2_5b:
+    if (
+        args.m2_4b
+        or args.m2_4c
+        or args.m2_4d
+        or args.m2_5a
+        or args.m2_5b
+        or args.m3_1
+    ):
         args.shared_atmosphere = True
         default_m24a_out = str(ROOT / "results" / "milestone2_4a")
         if args.out_dir == default_m24a_out:
-            if args.m2_5b:
+            if args.m3_1:
+                milestone = "milestone3_1"
+            elif args.m2_5b:
                 milestone = "milestone2_5b"
             elif args.m2_5a:
                 milestone = "milestone2_5a"
@@ -141,12 +174,12 @@ def parse_args():
             else:
                 milestone = "milestone2_4b"
             args.out_dir = str(ROOT / "results" / milestone)
-    if args.m2_4c or args.m2_4d or args.m2_5a or args.m2_5b:
+    if args.m2_4c or args.m2_4d or args.m2_5a or args.m2_5b or args.m3_1:
         default_template = str(
             ROOT / "data" / "milestone2_t0_cloud_grid_profiles_chip{chip}.npz"
         )
         if args.profile_grid_template == default_template:
-            if args.m2_5b:
+            if args.m2_5b or args.m3_1:
                 grid_name = (
                     "milestone2_t0_alpha_vmr_cloud_grid_profiles_exomol_chip{chip}.npz"
                 )
@@ -161,9 +194,16 @@ def parse_args():
             args.init_t0 = 1219.0
         if args.init_log_p_cloud == 1.28:
             args.init_log_p_cloud = 1.45
-    if args.m2_4d or args.m2_5a or args.m2_5b:
+    if args.m2_4d or args.m2_5a or args.m2_5b or args.m3_1:
         args.normalization_mode = "yama"
-    if args.m2_5b:
+    if args.m3_1:
+        if args.log_p_cloud_min == -2.0:
+            args.log_p_cloud_min = -1.5
+        if args.log_p_cloud_max == 2.0:
+            args.log_p_cloud_max = 1.5
+        if args.init_log_p_cloud == 1.45:
+            args.init_log_p_cloud = 1.25
+    if args.m2_5b or args.m3_1:
         if args.target_accept_prob == 0.98:
             args.target_accept_prob = 0.99
         if args.max_tree_depth == 11:
@@ -177,7 +217,7 @@ def main():
     args = parse_args()
     jax.config.update("jax_enable_x64", args.x64)
     profile_grid_template = None if args.smoke_test else args.profile_grid_template
-    if args.m2_5b:
+    if args.m2_5b or args.m3_1:
         (
             chip_data_list,
             geometry,
@@ -281,6 +321,8 @@ def main():
         fixed_q2=args.fixed_q2,
         shared_atmosphere=args.shared_atmosphere,
         normalization_mode=args.normalization_mode,
+        column_mode="double_cloud" if args.m3_1 else "clear_cloud",
+        fixed_cloud_delta=args.fixed_cloud_delta,
     )
     if args.print_summary:
         mcmc.print_summary()
@@ -312,6 +354,8 @@ def main():
         fix_geometry=args.fix_geometry_to_milestone1,
         shared_atmosphere=args.shared_atmosphere,
         normalization_mode=args.normalization_mode,
+        column_mode="double_cloud" if args.m3_1 else "clear_cloud",
+        fixed_cloud_delta=args.fixed_cloud_delta,
     )
     print(f"Samples saved to {output_path}")
 

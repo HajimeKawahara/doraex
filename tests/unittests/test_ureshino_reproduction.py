@@ -23,11 +23,29 @@ from doraex.operators.design_matrix import (
 from doraex.operators.doppler import doppler_factor
 from doraex.priors.spherical_gp import (
     add_diagonal_jitter,
+    project_zero_mean_covariance,
     squared_exponential_covariance,
 )
 
 
 jax.config.update("jax_enable_x64", True)
+
+
+def test_zero_mean_covariance_projection_removes_weighted_monopole():
+    covariance = jnp.asarray(
+        [
+            [2.0, 0.3, 0.2],
+            [0.3, 1.5, 0.4],
+            [0.2, 0.4, 1.0],
+        ]
+    )
+    weights = jnp.asarray([0.2, 0.3, 0.5])
+
+    projected = project_zero_mean_covariance(covariance, weights=weights)
+
+    np.testing.assert_allclose(projected, projected.T, rtol=1.0e-12, atol=1.0e-12)
+    np.testing.assert_allclose(projected @ weights, jnp.zeros(3), atol=1.0e-12)
+    np.testing.assert_allclose(weights @ projected, jnp.zeros(3), atol=1.0e-12)
 
 
 def _reference_incline(theta0, phi0, alpha):

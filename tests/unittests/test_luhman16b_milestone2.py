@@ -76,6 +76,22 @@ def _load_chip_comparison_script():
     return module
 
 
+def _load_delta_sensitivity_script():
+    script_path = (
+        ROOT
+        / "examples"
+        / "luhman16b_yama"
+        / "run_milestone3_delta_sensitivity.py"
+    )
+    script_dir = str(script_path.parent)
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    spec = importlib.util.spec_from_file_location("delta_sensitivity", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 pytestmark = pytest.mark.skipif(
     not (DATA_DIR / "fainterspectral-fits_6.pickle").exists(),
     reason="Milestone input data files are not available.",
@@ -420,6 +436,102 @@ def test_joint_free_t0_cloud_two_column_model_trace_smoke():
     assert alpha_trace["A"]["value"].shape == (2,)
     assert yama_trace["sigma_b"]["value"].shape == ()
 
+    double_cloud_trace = handlers.trace(seeded_model).get_trace(
+        jnp.asarray(np.stack([chip0.flux, chip1.flux], axis=0)),
+        geometry.theta,
+        geometry.phi,
+        geometry.distance_matrix,
+        jnp.asarray(chip0.obs_times),
+        jnp.asarray(np.stack([chip0.wavelengths, chip1.wavelengths], axis=0)),
+        jnp.asarray(np.stack([t0_grid, t0_grid], axis=0)),
+        jnp.asarray(np.stack([log_p_cloud_grid, log_p_cloud_grid], axis=0)),
+        jnp.asarray(np.stack(clear_alpha_vmr_grids, axis=0)),
+        jnp.asarray(np.stack(cloudy_alpha_vmr_grids, axis=0)),
+        alpha_grid=jnp.asarray(np.stack([alpha_grid, alpha_grid], axis=0)),
+        zeta_vmr_grid=jnp.asarray(np.stack([zeta_vmr_grid, zeta_vmr_grid], axis=0)),
+        period_mode="fixed",
+        fixed_ell_b=0.3,
+        shared_atmosphere=True,
+        normalization_mode="yama",
+        column_mode="double_cloud",
+        fixed_cloud_delta=1.0,
+        log_p_cloud_bounds=(-1.5, 1.5),
+    )
+
+    assert double_cloud_trace["obs"]["value"].shape == (
+        chip0.flux.size + chip1.flux.size,
+    )
+    assert double_cloud_trace["T0"]["value"].shape == ()
+    assert double_cloud_trace["alpha"]["value"].shape == ()
+    assert double_cloud_trace["log_p_mid"]["value"].shape == ()
+    assert double_cloud_trace["h_high"]["value"].shape == ()
+    assert "log_p_cloud" not in double_cloud_trace
+    assert "f_cloud" not in double_cloud_trace
+    assert double_cloud_trace["A"]["value"].shape == (2,)
+
+    pressure_trace = handlers.trace(seeded_model).get_trace(
+        jnp.asarray(np.stack([chip0.flux, chip1.flux], axis=0)),
+        geometry.theta,
+        geometry.phi,
+        geometry.distance_matrix,
+        jnp.asarray(chip0.obs_times),
+        jnp.asarray(np.stack([chip0.wavelengths, chip1.wavelengths], axis=0)),
+        jnp.asarray(np.stack([t0_grid, t0_grid], axis=0)),
+        jnp.asarray(np.stack([log_p_cloud_grid, log_p_cloud_grid], axis=0)),
+        jnp.asarray(np.stack(clear_alpha_vmr_grids, axis=0)),
+        jnp.asarray(np.stack(cloudy_alpha_vmr_grids, axis=0)),
+        alpha_grid=jnp.asarray(np.stack([alpha_grid, alpha_grid], axis=0)),
+        zeta_vmr_grid=jnp.asarray(np.stack([zeta_vmr_grid, zeta_vmr_grid], axis=0)),
+        period_mode="fixed",
+        fixed_ell_b=0.3,
+        shared_atmosphere=True,
+        normalization_mode="yama",
+        column_mode="pressure_perturbation",
+        pressure_derivative_step=0.05,
+        log_p_cloud_bounds=(-1.5, 1.5),
+    )
+
+    assert pressure_trace["obs"]["value"].shape == (
+        chip0.flux.size + chip1.flux.size,
+    )
+    assert pressure_trace["T0"]["value"].shape == ()
+    assert pressure_trace["alpha"]["value"].shape == ()
+    assert pressure_trace["log_p_cloud"]["value"].shape == ()
+    assert pressure_trace["zeta_vmr"]["value"].shape == ()
+    assert pressure_trace["sigma_log_p"]["value"].shape == ()
+    assert pressure_trace["sigma_b"]["value"].shape == ()
+    assert "h_high" not in pressure_trace
+    assert "f_cloud" not in pressure_trace
+    assert pressure_trace["A"]["value"].shape == (2,)
+
+    zero_mean_pressure_trace = handlers.trace(seeded_model).get_trace(
+        jnp.asarray(np.stack([chip0.flux, chip1.flux], axis=0)),
+        geometry.theta,
+        geometry.phi,
+        geometry.distance_matrix,
+        jnp.asarray(chip0.obs_times),
+        jnp.asarray(np.stack([chip0.wavelengths, chip1.wavelengths], axis=0)),
+        jnp.asarray(np.stack([t0_grid, t0_grid], axis=0)),
+        jnp.asarray(np.stack([log_p_cloud_grid, log_p_cloud_grid], axis=0)),
+        jnp.asarray(np.stack(clear_alpha_vmr_grids, axis=0)),
+        jnp.asarray(np.stack(cloudy_alpha_vmr_grids, axis=0)),
+        alpha_grid=jnp.asarray(np.stack([alpha_grid, alpha_grid], axis=0)),
+        zeta_vmr_grid=jnp.asarray(np.stack([zeta_vmr_grid, zeta_vmr_grid], axis=0)),
+        period_mode="fixed",
+        fixed_ell_b=0.3,
+        shared_atmosphere=True,
+        normalization_mode="yama",
+        column_mode="pressure_perturbation",
+        pressure_derivative_step=0.05,
+        zero_mean_pressure_map=True,
+        log_p_cloud_bounds=(-1.5, 1.5),
+    )
+
+    assert zero_mean_pressure_trace["obs"]["value"].shape == (
+        chip0.flux.size + chip1.flux.size,
+    )
+    assert zero_mean_pressure_trace["sigma_log_p"]["value"].shape == ()
+
 
 def test_free_t0_cloud_two_column_mcmc_smoke():
     chip, geometry, _, _ = _small_inputs()
@@ -487,6 +599,16 @@ def test_fixed_ell_sensitivity_helpers():
     assert values == [0.25, 0.30, 0.4]
     assert module.ell_tag(0.25) == "ell0p250"
     assert module.ell_tag(0.4) == "ell0p400"
+
+
+def test_delta_sensitivity_helpers():
+    module = _load_delta_sensitivity_script()
+    values = module.parse_delta_values("0.03, 0.1,0.3")
+
+    assert values == [0.03, 0.1, 0.3]
+    assert module.delta_tag(0.03) == "delta0p030"
+    assert module.midpoint_bounds(0.3) == (-1.85, 1.85)
+    assert module.default_init_log_p_mid(0.1) == pytest.approx(1.4)
 
 
 def test_chip_aware_milestone2_default_paths():

@@ -8,9 +8,14 @@ from doraex.geometry.limb_darkening import kipping_q_to_u
 from doraex.inference.marginal_likelihood import diagonal_noise_variance
 from doraex.operators.design_matrix import (
     full_design_matrix_from_times,
+    linear_profile_operator_from_times,
     two_column_operator_from_times,
 )
-from doraex.priors.spherical_gp import add_diagonal_jitter, squared_exponential_covariance
+from doraex.priors.spherical_gp import (
+    add_diagonal_jitter,
+    project_zero_mean_covariance,
+    squared_exponential_covariance,
+)
 
 
 def _interpolate_profile_grid(parameter_grid, profile_grid, parameter):
@@ -639,6 +644,10 @@ def joint_free_t0_cloud_two_column_doppler_model(
     fixed_q2=0.59,
     shared_atmosphere=False,
     normalization_mode="surface_scale",
+    column_mode="clear_cloud",
+    fixed_cloud_delta=1.0,
+    pressure_derivative_step=0.025,
+    zero_mean_pressure_map=False,
     gp_jitter=0.5e-6,
     noise_jitter=1.0e-6,
 ):
@@ -651,13 +660,27 @@ def joint_free_t0_cloud_two_column_doppler_model(
     calibration and noise parameters. The default normalization samples the
     legacy ``surface_scale`` amplitude; ``normalization_mode="yama"`` instead
     uses per-chip normalized spectra ``F_i / (A_i mean(F_i))`` following
-    Yama et al.
+    Yama et al. Set ``column_mode="double_cloud"`` to replace the clear/cloud
+    endpoints with deep/high cloudy endpoints centered on ``log_p_mid`` and
+    separated by ``fixed_cloud_delta`` dex. Set
+    ``column_mode="pressure_perturbation"`` to use a finite-difference
+    derivative of the cloudy spectrum with respect to ``log_p_cloud`` as the
+    linear map basis. Set ``zero_mean_pressure_map=True`` to remove the
+    monopole from that pressure-perturbation map prior.
     """
 
     n_chip = data.shape[0]
     n_phase = data.shape[1]
     if normalization_mode not in ("surface_scale", "yama"):
         raise ValueError("normalization_mode must be 'surface_scale' or 'yama'")
+    if column_mode not in ("clear_cloud", "double_cloud", "pressure_perturbation"):
+        raise ValueError(
+            "column_mode must be 'clear_cloud', 'double_cloud', or "
+            "'pressure_perturbation'"
+        )
+    pressure_name = "log_p_mid" if column_mode == "double_cloud" else "log_p_cloud"
+    fraction_name = "h_high" if column_mode == "double_cloud" else "f_cloud"
+    uses_fraction_map = column_mode != "pressure_perturbation"
 
     if fix_geometry:
         cosi = numpyro.deterministic("cosi", jnp.asarray(fixed_cosi))
@@ -692,11 +715,17 @@ def joint_free_t0_cloud_two_column_doppler_model(
             )
         else:
             alpha = None
-        log_p_cloud = numpyro.sample(
-            "log_p_cloud",
+        log_p_location = numpyro.sample(
+            pressure_name,
             dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]),
         )
-        mean_cloud_fraction = numpyro.sample("f_cloud", dist.Uniform(0.0, 1.0))
+        if uses_fraction_map:
+            mean_cloud_fraction = numpyro.sample(
+                fraction_name,
+                dist.Uniform(0.0, 1.0),
+            )
+        else:
+            mean_cloud_fraction = None
         if has_vmr_grid:
             zeta_vmr = numpyro.sample(
                 "zeta_vmr",
@@ -716,14 +745,17 @@ def joint_free_t0_cloud_two_column_doppler_model(
             )
         else:
             alpha = None
-        log_p_cloud = numpyro.sample(
-            "log_p_cloud",
+        log_p_location = numpyro.sample(
+            pressure_name,
             dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]).expand([n_chip]),
         )
-        mean_cloud_fraction = numpyro.sample(
-            "f_cloud",
-            dist.Uniform(0.0, 1.0).expand([n_chip]),
-        )
+        if uses_fraction_map:
+            mean_cloud_fraction = numpyro.sample(
+                fraction_name,
+                dist.Uniform(0.0, 1.0).expand([n_chip]),
+            )
+        else:
+            mean_cloud_fraction = None
         if has_vmr_grid:
             zeta_vmr = numpyro.sample(
                 "zeta_vmr",
@@ -763,14 +795,17 @@ def joint_free_t0_cloud_two_column_doppler_model(
         alpha_chip = alpha if shared_atmosphere else (
             None if alpha is None else alpha[chip_index]
         )
-        log_p_cloud_chip = (
-            log_p_cloud if shared_atmosphere else log_p_cloud[chip_index]
+        log_p_location_chip = (
+            log_p_location if shared_atmosphere else log_p_location[chip_index]
         )
-        mean_cloud_fraction_chip = (
-            mean_cloud_fraction
-            if shared_atmosphere
-            else mean_cloud_fraction[chip_index]
-        )
+        if uses_fraction_map:
+            mean_cloud_fraction_chip = (
+                mean_cloud_fraction
+                if shared_atmosphere
+                else mean_cloud_fraction[chip_index]
+            )
+        else:
+            mean_cloud_fraction_chip = None
         if has_alpha_grid:
             zeta_vmr_chip = zeta_vmr if shared_atmosphere else zeta_vmr[chip_index]
             clear_profile = _interpolate_profile_grid_3d(
@@ -782,17 +817,82 @@ def joint_free_t0_cloud_two_column_doppler_model(
                 alpha_chip,
                 zeta_vmr_chip,
             )
-            cloudy_profile = _interpolate_profile_grid_4d(
-                t0_grid[chip_index],
-                alpha_grid[chip_index],
-                log_p_cloud_grid[chip_index],
-                zeta_vmr_grid[chip_index],
-                cloudy_profile_grid[chip_index],
-                t0_chip,
-                alpha_chip,
-                log_p_cloud_chip,
-                zeta_vmr_chip,
-            )
+            if column_mode == "pressure_perturbation":
+                base_profile = _interpolate_profile_grid_4d(
+                    t0_grid[chip_index],
+                    alpha_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    alpha_chip,
+                    log_p_location_chip,
+                    zeta_vmr_chip,
+                )
+                deeper_profile = _interpolate_profile_grid_4d(
+                    t0_grid[chip_index],
+                    alpha_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    alpha_chip,
+                    log_p_location_chip + pressure_derivative_step,
+                    zeta_vmr_chip,
+                )
+                higher_profile = _interpolate_profile_grid_4d(
+                    t0_grid[chip_index],
+                    alpha_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    alpha_chip,
+                    log_p_location_chip - pressure_derivative_step,
+                    zeta_vmr_chip,
+                )
+                contrast_profile = (
+                    deeper_profile - higher_profile
+                ) / (2.0 * pressure_derivative_step)
+            elif column_mode == "double_cloud":
+                clear_profile = _interpolate_profile_grid_4d(
+                    t0_grid[chip_index],
+                    alpha_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    alpha_chip,
+                    log_p_location_chip + 0.5 * fixed_cloud_delta,
+                    zeta_vmr_chip,
+                )
+                cloudy_profile = _interpolate_profile_grid_4d(
+                    t0_grid[chip_index],
+                    alpha_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    alpha_chip,
+                    log_p_location_chip - 0.5 * fixed_cloud_delta,
+                    zeta_vmr_chip,
+                )
+                base_profile = None
+                contrast_profile = None
+            else:
+                cloudy_profile = _interpolate_profile_grid_4d(
+                    t0_grid[chip_index],
+                    alpha_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    alpha_chip,
+                    log_p_location_chip,
+                    zeta_vmr_chip,
+                )
+                base_profile = None
+                contrast_profile = None
         elif has_vmr_grid:
             zeta_vmr_chip = zeta_vmr if shared_atmosphere else zeta_vmr[chip_index]
             clear_profile = _interpolate_profile_grid_2d(
@@ -802,44 +902,161 @@ def joint_free_t0_cloud_two_column_doppler_model(
                 t0_chip,
                 zeta_vmr_chip,
             )
-            cloudy_profile = _interpolate_profile_grid_3d(
-                t0_grid[chip_index],
-                log_p_cloud_grid[chip_index],
-                zeta_vmr_grid[chip_index],
-                cloudy_profile_grid[chip_index],
-                t0_chip,
-                log_p_cloud_chip,
-                zeta_vmr_chip,
-            )
+            if column_mode == "pressure_perturbation":
+                base_profile = _interpolate_profile_grid_3d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip,
+                    zeta_vmr_chip,
+                )
+                deeper_profile = _interpolate_profile_grid_3d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip + pressure_derivative_step,
+                    zeta_vmr_chip,
+                )
+                higher_profile = _interpolate_profile_grid_3d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip - pressure_derivative_step,
+                    zeta_vmr_chip,
+                )
+                contrast_profile = (
+                    deeper_profile - higher_profile
+                ) / (2.0 * pressure_derivative_step)
+            elif column_mode == "double_cloud":
+                clear_profile = _interpolate_profile_grid_3d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip + 0.5 * fixed_cloud_delta,
+                    zeta_vmr_chip,
+                )
+                cloudy_profile = _interpolate_profile_grid_3d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip - 0.5 * fixed_cloud_delta,
+                    zeta_vmr_chip,
+                )
+                base_profile = None
+                contrast_profile = None
+            else:
+                cloudy_profile = _interpolate_profile_grid_3d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    zeta_vmr_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip,
+                    zeta_vmr_chip,
+                )
+                base_profile = None
+                contrast_profile = None
         else:
             clear_profile = _interpolate_profile_grid(
                 t0_grid[chip_index],
                 clear_profile_grid[chip_index],
                 t0_chip,
             )
-            cloudy_profile = _interpolate_profile_grid_2d(
-                t0_grid[chip_index],
-                log_p_cloud_grid[chip_index],
-                cloudy_profile_grid[chip_index],
-                t0_chip,
-                log_p_cloud_chip,
+            if column_mode == "pressure_perturbation":
+                base_profile = _interpolate_profile_grid_2d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip,
+                )
+                deeper_profile = _interpolate_profile_grid_2d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip + pressure_derivative_step,
+                )
+                higher_profile = _interpolate_profile_grid_2d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip - pressure_derivative_step,
+                )
+                contrast_profile = (
+                    deeper_profile - higher_profile
+                ) / (2.0 * pressure_derivative_step)
+            elif column_mode == "double_cloud":
+                clear_profile = _interpolate_profile_grid_2d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip + 0.5 * fixed_cloud_delta,
+                )
+                cloudy_profile = _interpolate_profile_grid_2d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip - 0.5 * fixed_cloud_delta,
+                )
+                base_profile = None
+                contrast_profile = None
+            else:
+                cloudy_profile = _interpolate_profile_grid_2d(
+                    t0_grid[chip_index],
+                    log_p_cloud_grid[chip_index],
+                    cloudy_profile_grid[chip_index],
+                    t0_chip,
+                    log_p_location_chip,
+                )
+                base_profile = None
+                contrast_profile = None
+        if column_mode == "pressure_perturbation":
+            baseline, contrast_matrix = linear_profile_operator_from_times(
+                theta,
+                phi,
+                vrot,
+                inclination,
+                u1,
+                u2,
+                obs_times,
+                period,
+                wavelengths[chip_index],
+                base_profile,
+                contrast_profile,
+                weights=jnp.exp(log_w[chip_index]),
+                pixel_area=pixel_area,
             )
-        baseline, contrast_matrix = two_column_operator_from_times(
-            theta,
-            phi,
-            vrot,
-            inclination,
-            u1,
-            u2,
-            obs_times,
-            period,
-            wavelengths[chip_index],
-            clear_profile,
-            cloudy_profile,
-            mean_cloud_fraction_chip,
-            weights=jnp.exp(log_w[chip_index]),
-            pixel_area=pixel_area,
-        )
+        else:
+            baseline, contrast_matrix = two_column_operator_from_times(
+                theta,
+                phi,
+                vrot,
+                inclination,
+                u1,
+                u2,
+                obs_times,
+                period,
+                wavelengths[chip_index],
+                clear_profile,
+                cloudy_profile,
+                mean_cloud_fraction_chip,
+                weights=jnp.exp(log_w[chip_index]),
+                pixel_area=pixel_area,
+            )
         if normalization_mode == "surface_scale":
             baseline = surface_scale[chip_index] * baseline
             contrast_matrix = surface_scale[chip_index] * contrast_matrix
@@ -861,13 +1078,24 @@ def joint_free_t0_cloud_two_column_doppler_model(
     contrast_matrix = jnp.concatenate(contrast_matrices, axis=0)
     noise_variance = jnp.concatenate(noise_variances, axis=0)
 
-    sigma_b = numpyro.sample("sigma_b", dist.HalfNormal(sigma_b_scale))
+    if column_mode == "pressure_perturbation":
+        sigma_b = numpyro.sample("sigma_log_p", dist.HalfNormal(sigma_b_scale))
+        numpyro.deterministic("sigma_b", sigma_b)
+    else:
+        sigma_b = numpyro.sample("sigma_b", dist.HalfNormal(sigma_b_scale))
     if fixed_ell_b is None:
         ell_b = numpyro.sample("ell_b", dist.Uniform(0.1, 1.5))
     else:
         ell_b = numpyro.deterministic("ell_b", jnp.asarray(fixed_ell_b))
+    contrast_covariance = squared_exponential_covariance(
+        distance_matrix,
+        sigma_b,
+        ell_b,
+    )
+    if column_mode == "pressure_perturbation" and zero_mean_pressure_map:
+        contrast_covariance = project_zero_mean_covariance(contrast_covariance)
     contrast_covariance = add_diagonal_jitter(
-        squared_exponential_covariance(distance_matrix, sigma_b, ell_b),
+        contrast_covariance,
         jitter=gp_jitter,
     )
     covariance_factor = contrast_matrix @ jnp.linalg.cholesky(contrast_covariance)

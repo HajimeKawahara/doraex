@@ -32,3 +32,29 @@ def add_diagonal_jitter(matrix, jitter=1.0e-6):
         nearly singular GP covariance matrices.
     """
     return matrix + jitter * jnp.eye(matrix.shape[0], dtype=matrix.dtype)
+
+
+def project_zero_mean_covariance(covariance, weights=None):
+    """Project a covariance matrix onto the weighted zero-mean subspace.
+
+    Args:
+        covariance: Square covariance matrix for a map vector.
+        weights: Optional pixel weights defining the constrained mean. When
+            omitted, all pixels receive equal weight.
+
+    Returns:
+        ``P @ covariance @ P.T`` where ``P`` removes the weighted monopole
+        component. The resulting covariance is positive semidefinite and should
+        generally receive diagonal jitter before Cholesky factorization.
+    """
+
+    covariance = jnp.asarray(covariance)
+    n_pixel = covariance.shape[0]
+    if weights is None:
+        weights = jnp.ones(n_pixel, dtype=covariance.dtype) / n_pixel
+    else:
+        weights = jnp.asarray(weights, dtype=covariance.dtype)
+        weights = weights / jnp.sum(weights)
+    ones = jnp.ones(n_pixel, dtype=covariance.dtype)
+    projector = jnp.eye(n_pixel, dtype=covariance.dtype) - jnp.outer(ones, weights)
+    return projector @ covariance @ projector.T
