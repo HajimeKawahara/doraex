@@ -98,13 +98,21 @@ def parse_args():
     )
     parser.add_argument("--nside", type=int, default=8)
     parser.add_argument("--max-map-samples", type=int, default=None)
+    parser.add_argument(
+        "--figures-only",
+        action="store_true",
+        help="Regenerate figures from saved product arrays without recomputing maps.",
+    )
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--smoke-wavelength-step", type=int, default=64)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument(
         "--cloud-fraction-cmap",
-        default="afmhot",
-        help="Matplotlib colormap for the cloud-fraction map upper panel.",
+        default=None,
+        help=(
+            "Matplotlib colormap for the surface-map upper panel. Defaults to "
+            "coolwarm for pressure perturbations and afmhot otherwise."
+        ),
     )
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
@@ -244,29 +252,282 @@ def _center_values_by_chip(samples, name, chip_count):
     raise ValueError(f"{name} must be one- or two-dimensional.")
 
 
-def _plot_log_p_cloud_map(mean_map, std_map, out_path, cmap="viridis"):
+def _plot_log_p_cloud_map(mean_map, std_map, out_path, cmap="inferno"):
     _plot_two_panel_map(
         mean_map,
         std_map,
-        "Posterior mean cloud pressure",
-        "Posterior std. dev. of cloud pressure",
-        "log10 P_cloud [bar]",
+        "Posterior mean log cloud pressure [dex]",
+        "Pressure std. dev.",
+        "",
         "dex",
         out_path,
         top_cmap=cmap,
+        colorbar_orientation="vertical",
+        invert_top_colorbar=True,
     )
 
 
-def _plot_p_cloud_map(mean_map, std_map, out_path, cmap="viridis"):
+def _plot_p_cloud_map(mean_map, std_map, out_path, cmap="inferno"):
     _plot_two_panel_map(
         mean_map,
         std_map,
         "Posterior mean cloud pressure",
-        "Posterior std. dev. of cloud pressure",
-        "P_cloud [bar]",
-        "bar",
+        "Log-pressure std. dev.",
+        "",
+        "dex",
         out_path,
         top_cmap=cmap,
+        colorbar_orientation="vertical",
+        invert_top_colorbar=True,
+        top_colorbar_unit="bar",
+    )
+
+
+def _map_plot_labels(fraction_stem):
+    """Return figure titles and units for the saved surface-map product."""
+
+    if fraction_stem == "cloud_pressure_perturbation":
+        return {
+            "mean_title": "Posterior mean cloud-pressure perturbation [dex]",
+            "std_title": "Perturbation std. dev.",
+            "mean_unit": "",
+            "std_unit": "dex",
+        }
+    if fraction_stem == "high_cloud_fraction":
+        return {
+            "mean_title": "Posterior mean high-cloud fraction",
+            "std_title": "High-cloud fraction std. dev.",
+            "mean_unit": "h_high + b",
+            "std_unit": "std",
+        }
+    return {
+        "mean_title": "Posterior mean cloud fraction",
+        "std_title": "Posterior std. dev. of cloud fraction",
+        "mean_unit": "f_cloud + b",
+        "std_unit": "std",
+    }
+
+
+def _map_plot_cmap(fraction_stem, requested_cmap):
+    """Return the surface-map colormap for a product family."""
+
+    if requested_cmap is not None:
+        return requested_cmap
+    if fraction_stem == "cloud_pressure_perturbation":
+        return "coolwarm"
+    return "afmhot"
+
+
+def _rows_are_identical(values, rtol=1.0e-10, atol=1.0e-12):
+    """Return whether all first-axis rows match the first row."""
+
+    values = np.asarray(values)
+    if values.ndim < 2 or values.shape[0] <= 1:
+        return True
+    return bool(np.allclose(values, values[0][None, ...], rtol=rtol, atol=atol))
+
+
+def _remove_paths(paths):
+    """Remove stale generated figure files when present."""
+
+    for path in paths:
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _plot_surface_map_figures(
+    out_dir,
+    fraction_stem,
+    cloud_mean_by_chip,
+    cloud_var_by_chip,
+    cmap,
+    chip_data_list,
+    pressure_maps=None,
+):
+    """Plot shared or chip-specific surface-map figures."""
+
+    shared_maps = _rows_are_identical(cloud_mean_by_chip) and _rows_are_identical(
+        cloud_var_by_chip
+    )
+    labels = _map_plot_labels(fraction_stem)
+    pressure_perturbation_map = fraction_stem == "cloud_pressure_perturbation"
+    if shared_maps:
+        _plot_cloud_fraction(
+            cloud_mean_by_chip[0],
+            np.sqrt(cloud_var_by_chip[0]),
+            out_dir / f"figure8_{fraction_stem}_joint.png",
+            cmap=cmap,
+            colorbar_orientation=(
+                "vertical" if pressure_perturbation_map else "horizontal"
+            ),
+            invert_mean_colorbar=pressure_perturbation_map,
+            **labels,
+        )
+        _remove_paths(
+            [
+                out_dir / f"figure8_{fraction_stem}_chip{chip.chip_index}.png"
+                for chip in chip_data_list
+            ]
+        )
+        if pressure_maps is not None:
+            _plot_log_p_cloud_map(
+                pressure_maps["log_p_cloud_mean_by_chip"][0],
+                np.sqrt(pressure_maps["log_p_cloud_var_by_chip"][0]),
+                out_dir / "figure8_log_p_cloud_joint.png",
+            )
+            _plot_p_cloud_map(
+                pressure_maps["p_cloud_mean_by_chip"][0],
+                np.sqrt(pressure_maps["log_p_cloud_var_by_chip"][0]),
+                out_dir / "figure8_p_cloud_joint.png",
+            )
+            _remove_paths(
+                [
+                    out_dir / f"figure8_log_p_cloud_chip{chip.chip_index}.png"
+                    for chip in chip_data_list
+                ]
+                + [
+                    out_dir / f"figure8_p_cloud_chip{chip.chip_index}.png"
+                    for chip in chip_data_list
+                ]
+            )
+        return shared_maps
+
+    _remove_paths([out_dir / f"figure8_{fraction_stem}_joint.png"])
+    if pressure_maps is not None:
+        _remove_paths(
+            [
+                out_dir / "figure8_log_p_cloud_joint.png",
+                out_dir / "figure8_p_cloud_joint.png",
+            ]
+        )
+    for chip_position, chip_data in enumerate(chip_data_list):
+        chip_index = chip_data.chip_index
+        _plot_cloud_fraction(
+            cloud_mean_by_chip[chip_position],
+            np.sqrt(cloud_var_by_chip[chip_position]),
+            out_dir / f"figure8_{fraction_stem}_chip{chip_index}.png",
+            cmap=cmap,
+            colorbar_orientation=(
+                "vertical" if pressure_perturbation_map else "horizontal"
+            ),
+            invert_mean_colorbar=pressure_perturbation_map,
+            **labels,
+        )
+        if pressure_maps is not None:
+            _plot_log_p_cloud_map(
+                pressure_maps["log_p_cloud_mean_by_chip"][chip_position],
+                np.sqrt(pressure_maps["log_p_cloud_var_by_chip"][chip_position]),
+                out_dir / f"figure8_log_p_cloud_chip{chip_index}.png",
+            )
+            _plot_p_cloud_map(
+                pressure_maps["p_cloud_mean_by_chip"][chip_position],
+                np.sqrt(pressure_maps["log_p_cloud_var_by_chip"][chip_position]),
+                out_dir / f"figure8_p_cloud_chip{chip_index}.png",
+            )
+    return shared_maps
+
+
+def _infer_fraction_stem(out_dir):
+    """Infer the surface-map product stem from saved arrays."""
+
+    for stem in (
+        "cloud_pressure_perturbation",
+        "high_cloud_fraction",
+        "cloud_fraction",
+    ):
+        if (out_dir / f"{stem}_mean_joint_by_chip.npy").exists():
+            return stem
+    raise FileNotFoundError(
+        "Could not infer saved map products. Expected one of "
+        "cloud_pressure_perturbation_mean_joint_by_chip.npy, "
+        "high_cloud_fraction_mean_joint_by_chip.npy, or "
+        "cloud_fraction_mean_joint_by_chip.npy."
+    )
+
+
+def _load_sigma_d_by_chip(out_dir, chip_count):
+    """Load median per-chip noise levels from product diagnostics."""
+
+    diagnostics_path = out_dir / "joint_chip_diagnostics.json"
+    if not diagnostics_path.exists():
+        return [1.0] * chip_count
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    values = diagnostics.get("sigma_d_median_by_chip")
+    if values is None:
+        return [1.0] * chip_count
+    return [float(value) for value in values]
+
+
+def _plot_saved_joint_figures(args, out_dir, chip_data_list):
+    """Regenerate joint-product figures from saved arrays."""
+
+    fraction_stem = _infer_fraction_stem(out_dir)
+    pressure_perturbation_mode = fraction_stem == "cloud_pressure_perturbation"
+    cloud_mean_by_chip = np.asarray(
+        np.load(out_dir / f"{fraction_stem}_mean_joint_by_chip.npy")
+    )
+    cloud_var_by_chip = np.asarray(
+        np.load(out_dir / f"{fraction_stem}_var_joint_by_chip.npy")
+    )
+    contrast_mean = np.asarray(np.load(out_dir / "contrast_mean_joint.npy"))
+    contrast_var = np.asarray(np.load(out_dir / "contrast_var_joint.npy"))
+    sigma_d_by_chip = _load_sigma_d_by_chip(out_dir, len(chip_data_list))
+
+    if pressure_perturbation_mode:
+        log_p_cloud_mean_by_chip = np.asarray(
+            np.load(out_dir / "log_p_cloud_mean_joint_by_chip.npy")
+        )
+        log_p_cloud_var_by_chip = np.asarray(
+            np.load(out_dir / "log_p_cloud_var_joint_by_chip.npy")
+        )
+        p_cloud_mean_by_chip = np.asarray(
+            np.load(out_dir / "p_cloud_mean_joint_by_chip.npy")
+        )
+        p_cloud_std_by_chip = np.asarray(
+            np.load(out_dir / "p_cloud_std_joint_by_chip.npy")
+        )
+        pressure_maps = {
+            "log_p_cloud_mean_by_chip": log_p_cloud_mean_by_chip,
+            "log_p_cloud_var_by_chip": log_p_cloud_var_by_chip,
+            "p_cloud_mean_by_chip": p_cloud_mean_by_chip,
+            "p_cloud_std_by_chip": p_cloud_std_by_chip,
+        }
+    else:
+        pressure_maps = None
+
+    _plot_surface_map_figures(
+        out_dir,
+        fraction_stem,
+        cloud_mean_by_chip,
+        cloud_var_by_chip,
+        _map_plot_cmap(fraction_stem, args.cloud_fraction_cmap),
+        chip_data_list,
+        pressure_maps=pressure_maps,
+    )
+
+    for chip_position, chip_data in enumerate(chip_data_list):
+        chip_index = chip_data.chip_index
+        _plot_delta_s(
+            np.asarray(np.load(out_dir / f"delta_s_mean_chip{chip_index}.npy")),
+            np.sqrt(np.asarray(np.load(out_dir / f"delta_s_var_chip{chip_index}.npy"))),
+            out_dir / f"figure8_delta_s_chip{chip_index}.png",
+        )
+        model = np.asarray(np.load(out_dir / f"model_spectrum_chip{chip_index}.npy"))
+        _plot_figure9(
+            chip_data.wavelengths,
+            chip_data.flux,
+            model,
+            sigma_d_by_chip[chip_position],
+            out_dir / f"figure9_joint_chip{chip_index}.png",
+        )
+
+    _plot_delta_s(
+        contrast_mean,
+        np.sqrt(contrast_var),
+        out_dir / "figure8_shared_contrast_joint.png",
+        mean_title="Mean shared contrast",
     )
 
 
@@ -425,6 +686,10 @@ def main():
 
     chip_data_list = _load_chip_data_list(args)
     geometry = build_luhman16b_geometry(nside=args.nside)
+    if args.figures_only:
+        _plot_saved_joint_figures(args, out_dir, chip_data_list)
+        print(f"Joint figures regenerated from saved products in {out_dir}")
+        return
     samples = dict(np.load(args.samples, allow_pickle=False))
     if "sigma_log_p" in samples and "h_high" not in samples and "f_cloud" not in samples:
         fraction_stem = "cloud_pressure_perturbation"
@@ -510,6 +775,23 @@ def main():
         np.save(out_dir / "log_p_cloud_var_joint_by_chip.npy", log_p_cloud_var_by_chip)
         np.save(out_dir / "p_cloud_mean_joint_by_chip.npy", p_cloud_mean_by_chip)
         np.save(out_dir / "p_cloud_std_joint_by_chip.npy", p_cloud_std_by_chip)
+        pressure_maps = {
+            "log_p_cloud_mean_by_chip": log_p_cloud_mean_by_chip,
+            "log_p_cloud_var_by_chip": log_p_cloud_var_by_chip,
+            "p_cloud_mean_by_chip": p_cloud_mean_by_chip,
+            "p_cloud_std_by_chip": p_cloud_std_by_chip,
+        }
+    else:
+        pressure_maps = None
+    _plot_surface_map_figures(
+        out_dir,
+        fraction_stem,
+        cloud_mean_by_chip,
+        cloud_var_by_chip,
+        _map_plot_cmap(fraction_stem, args.cloud_fraction_cmap),
+        chip_data_list,
+        pressure_maps=pressure_maps,
+    )
     for chip_position, chip_data in enumerate(chip_data_list):
         chip_index = chip_data.chip_index
         np.save(
@@ -732,23 +1014,6 @@ def main():
         delta_s_var = contrast_var * delta_scale**2
         np.save(out_dir / f"delta_s_mean_chip{chip_index}.npy", delta_s_mean)
         np.save(out_dir / f"delta_s_var_chip{chip_index}.npy", delta_s_var)
-        _plot_cloud_fraction(
-            cloud_mean_by_chip[chip_position],
-            np.sqrt(cloud_var_by_chip[chip_position]),
-            out_dir / f"figure8_{fraction_stem}_chip{chip_index}.png",
-            cmap=args.cloud_fraction_cmap,
-        )
-        if pressure_perturbation_mode:
-            _plot_log_p_cloud_map(
-                log_p_cloud_mean_by_chip[chip_position],
-                np.sqrt(log_p_cloud_var_by_chip[chip_position]),
-                out_dir / f"figure8_log_p_cloud_chip{chip_index}.png",
-            )
-            _plot_p_cloud_map(
-                p_cloud_mean_by_chip[chip_position],
-                p_cloud_std_by_chip[chip_position],
-                out_dir / f"figure8_p_cloud_chip{chip_index}.png",
-            )
         _plot_delta_s(
             delta_s_mean,
             np.sqrt(delta_s_var),
@@ -782,6 +1047,7 @@ def main():
         contrast_mean,
         np.sqrt(contrast_var),
         out_dir / "figure8_shared_contrast_joint.png",
+        mean_title="Mean shared contrast",
     )
     _write_joint_diagnostics(
         out_dir / "joint_chip_diagnostics.json",

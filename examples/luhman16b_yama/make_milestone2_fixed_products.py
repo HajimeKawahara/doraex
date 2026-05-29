@@ -127,9 +127,40 @@ def _plot_two_panel_map(
     out_path,
     top_cmap="afmhot",
     bottom_cmap="viridis",
+    colorbar_orientation="horizontal",
+    invert_top_colorbar=False,
+    invert_bottom_colorbar=False,
+    top_colorbar_unit=None,
+    bottom_colorbar_unit=None,
 ):
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
     import matplotlib.pyplot as plt
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    def add_vertical_colorbar(fig, ax, map_values, cmap, unit, invert=False):
+        values = np.asarray(map_values)
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            return
+        colorbar = fig.colorbar(
+            ScalarMappable(
+                norm=Normalize(
+                    vmin=float(np.min(finite_values)),
+                    vmax=float(np.max(finite_values)),
+                ),
+                cmap=cmap,
+            ),
+            ax=ax,
+            orientation="vertical",
+            fraction=0.035,
+            pad=0.02,
+        )
+        if unit:
+            colorbar.set_label(unit)
+        if invert:
+            colorbar.ax.invert_yaxis()
+
     try:
         _ensure_numpy_astropy_compat()
         import healpy as hp
@@ -146,41 +177,93 @@ def _plot_two_panel_map(
         )
         return
 
-    fig = plt.figure(figsize=(9, 6))
+    use_vertical_colorbar = colorbar_orientation == "vertical"
+    if top_colorbar_unit is None:
+        top_colorbar_unit = top_unit
+    if bottom_colorbar_unit is None:
+        bottom_colorbar_unit = bottom_unit
+    fig = plt.figure(
+        figsize=(
+            9.4 if use_vertical_colorbar else 9,
+            8.0 if use_vertical_colorbar else 7.0,
+        )
+    )
+    margins = (0.01, 0.04, 0.0, 0.04) if use_vertical_colorbar else None
     hp.mollview(
         top_map,
         fig=fig.number,
         sub=(2, 1, 1),
         cmap=top_cmap,
         title=top_title,
-        unit=top_unit,
+        unit="" if use_vertical_colorbar else top_unit,
         flip="geo",
+        cbar=not use_vertical_colorbar,
+        margins=margins,
     )
     hp.graticule()
+    if use_vertical_colorbar:
+        add_vertical_colorbar(
+            fig,
+            plt.gca(),
+            top_map,
+            top_cmap,
+            top_colorbar_unit,
+            invert=invert_top_colorbar,
+        )
     hp.mollview(
         bottom_map,
         fig=fig.number,
         sub=(2, 1, 2),
         cmap=bottom_cmap,
         title=bottom_title,
-        unit=bottom_unit,
+        unit="" if use_vertical_colorbar else bottom_unit,
         flip="geo",
+        cbar=not use_vertical_colorbar,
+        margins=margins,
     )
     hp.graticule()
+    if use_vertical_colorbar:
+        add_vertical_colorbar(
+            fig,
+            plt.gca(),
+            bottom_map,
+            bottom_cmap,
+            bottom_colorbar_unit,
+            invert=invert_bottom_colorbar,
+        )
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
-def _plot_cloud_fraction(mean_map, std_map, out_path, cmap="afmhot"):
+def _plot_cloud_fraction(
+    mean_map,
+    std_map,
+    out_path,
+    cmap="afmhot",
+    mean_title="Posterior mean cloud fraction",
+    std_title="Posterior std. dev. of cloud fraction",
+    mean_unit="f_cloud + b",
+    std_unit="std",
+    colorbar_orientation="horizontal",
+    invert_mean_colorbar=False,
+    invert_std_colorbar=False,
+    mean_colorbar_unit=None,
+    std_colorbar_unit=None,
+):
     _plot_two_panel_map(
         mean_map,
         std_map,
-        "Posterior mean cloud fraction",
-        "Posterior std. dev. of cloud fraction",
-        "f_cloud + b",
-        "std",
+        mean_title,
+        std_title,
+        mean_unit,
+        std_unit,
         out_path,
         top_cmap=cmap,
+        colorbar_orientation=colorbar_orientation,
+        invert_top_colorbar=invert_mean_colorbar,
+        invert_bottom_colorbar=invert_std_colorbar,
+        top_colorbar_unit=mean_colorbar_unit,
+        bottom_colorbar_unit=std_colorbar_unit,
     )
 
 
@@ -203,13 +286,19 @@ def _write_cloud_fraction_diagnostics(
     path.write_text(json.dumps(diagnostics, indent=2) + "\n", encoding="utf-8")
 
 
-def _plot_delta_s(delta_s_mean, delta_s_std, out_path):
+def _plot_delta_s(
+    delta_s_mean,
+    delta_s_std,
+    out_path,
+    mean_title="Mean delta_s contribution",
+    std_title="Std. dev.",
+):
     _plot_two_panel_map(
         delta_s_mean,
         delta_s_std,
-        "Mean spectral contrast contribution",
-        "Std. dev. of spectral contrast contribution",
-        "b * rms(delta spectrum)",
+        mean_title,
+        std_title,
+        "",
         "std",
         out_path,
     )
