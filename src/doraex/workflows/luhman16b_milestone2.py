@@ -1897,7 +1897,8 @@ def conditional_contrast_map_for_sample(
         jnp.asarray(sample["sigma_b"]),
         jnp.asarray(sample["ell_b"]),
     )
-    if bool(np.asarray(sample.get("zero_mean_pressure_map", False))):
+    zero_mean_pressure_map = bool(np.asarray(sample.get("zero_mean_pressure_map", False)))
+    if zero_mean_pressure_map:
         prior_covariance = project_zero_mean_covariance(prior_covariance)
     prior_covariance = add_diagonal_jitter(prior_covariance, jitter=gp_jitter)
     prior_mean = jnp.zeros(contrast_matrix.shape[1])
@@ -1905,13 +1906,17 @@ def conditional_contrast_map_for_sample(
         jnp.asarray(sample["sigma_d"]) ** 2 * jnp.ones(contrast_matrix.shape[0])
         + 1.0e-6
     )
-    return conditional_map_posterior(
+    posterior_mean, posterior_covariance = conditional_map_posterior(
         jnp.asarray(chip_data.flux).reshape(-1) - baseline,
         contrast_matrix,
         prior_mean,
         prior_covariance,
         noise_variance,
     )
+    if zero_mean_pressure_map:
+        posterior_mean = posterior_mean - jnp.mean(posterior_mean)
+        posterior_covariance = project_zero_mean_covariance(posterior_covariance)
+    return posterior_mean, posterior_covariance
 
 
 def conditional_contrast_map_for_free_cloud_sample(
@@ -1933,26 +1938,31 @@ def conditional_contrast_map_for_free_cloud_sample(
         cloudy_profile_grid,
         sample,
     )
-    prior_covariance = add_diagonal_jitter(
-        squared_exponential_covariance(
-            geometry.distance_matrix,
-            jnp.asarray(sample["sigma_b"]),
-            jnp.asarray(sample["ell_b"]),
-        ),
-        jitter=gp_jitter,
+    prior_covariance = squared_exponential_covariance(
+        geometry.distance_matrix,
+        jnp.asarray(sample["sigma_b"]),
+        jnp.asarray(sample["ell_b"]),
     )
+    zero_mean_pressure_map = bool(np.asarray(sample.get("zero_mean_pressure_map", False)))
+    if zero_mean_pressure_map:
+        prior_covariance = project_zero_mean_covariance(prior_covariance)
+    prior_covariance = add_diagonal_jitter(prior_covariance, jitter=gp_jitter)
     prior_mean = jnp.zeros(contrast_matrix.shape[1])
     noise_variance = (
         jnp.asarray(sample["sigma_d"]) ** 2 * jnp.ones(contrast_matrix.shape[0])
         + 1.0e-6
     )
-    return conditional_map_posterior(
+    posterior_mean, posterior_covariance = conditional_map_posterior(
         jnp.asarray(chip_data.flux).reshape(-1) - baseline,
         contrast_matrix,
         prior_mean,
         prior_covariance,
         noise_variance,
     )
+    if zero_mean_pressure_map:
+        posterior_mean = posterior_mean - jnp.mean(posterior_mean)
+        posterior_covariance = project_zero_mean_covariance(posterior_covariance)
+    return posterior_mean, posterior_covariance
 
 
 def conditional_contrast_map_for_free_t0_cloud_sample(
@@ -1980,26 +1990,31 @@ def conditional_contrast_map_for_free_t0_cloud_sample(
         alpha_grid,
         zeta_vmr_grid,
     )
-    prior_covariance = add_diagonal_jitter(
-        squared_exponential_covariance(
-            geometry.distance_matrix,
-            jnp.asarray(sample["sigma_b"]),
-            jnp.asarray(sample["ell_b"]),
-        ),
-        jitter=gp_jitter,
+    prior_covariance = squared_exponential_covariance(
+        geometry.distance_matrix,
+        jnp.asarray(sample["sigma_b"]),
+        jnp.asarray(sample["ell_b"]),
     )
+    zero_mean_pressure_map = bool(np.asarray(sample.get("zero_mean_pressure_map", False)))
+    if zero_mean_pressure_map:
+        prior_covariance = project_zero_mean_covariance(prior_covariance)
+    prior_covariance = add_diagonal_jitter(prior_covariance, jitter=gp_jitter)
     prior_mean = jnp.zeros(contrast_matrix.shape[1])
     noise_variance = (
         jnp.asarray(sample["sigma_d"]) ** 2 * jnp.ones(contrast_matrix.shape[0])
         + 1.0e-6
     )
-    return conditional_map_posterior(
+    posterior_mean, posterior_covariance = conditional_map_posterior(
         jnp.asarray(chip_data.flux).reshape(-1) - baseline,
         contrast_matrix,
         prior_mean,
         prior_covariance,
         noise_variance,
     )
+    if zero_mean_pressure_map:
+        posterior_mean = posterior_mean - jnp.mean(posterior_mean)
+        posterior_covariance = project_zero_mean_covariance(posterior_covariance)
+    return posterior_mean, posterior_covariance
 
 
 def conditional_contrast_map_for_joint_free_t0_cloud_sample(
@@ -2027,14 +2042,15 @@ def conditional_contrast_map_for_joint_free_t0_cloud_sample(
         alpha_grid,
         zeta_vmr_grid,
     )
-    prior_covariance = add_diagonal_jitter(
-        squared_exponential_covariance(
-            geometry.distance_matrix,
-            jnp.asarray(sample["sigma_b"]),
-            jnp.asarray(sample["ell_b"]),
-        ),
-        jitter=gp_jitter,
+    prior_covariance = squared_exponential_covariance(
+        geometry.distance_matrix,
+        jnp.asarray(sample["sigma_b"]),
+        jnp.asarray(sample["ell_b"]),
     )
+    zero_mean_pressure_map = bool(np.asarray(sample.get("zero_mean_pressure_map", False)))
+    if zero_mean_pressure_map:
+        prior_covariance = project_zero_mean_covariance(prior_covariance)
+    prior_covariance = add_diagonal_jitter(prior_covariance, jitter=gp_jitter)
     prior_mean = jnp.zeros(contrast_matrix.shape[1])
     residual = jnp.concatenate(
         [jnp.asarray(chip.flux).reshape(-1) for chip in chip_data_list],
@@ -2049,13 +2065,17 @@ def conditional_contrast_map_for_joint_free_t0_cloud_sample(
         ],
         axis=0,
     )
-    return conditional_map_posterior(
+    posterior_mean, posterior_covariance = conditional_map_posterior(
         residual,
         contrast_matrix,
         prior_mean,
         prior_covariance,
         noise_variance,
     )
+    if zero_mean_pressure_map:
+        posterior_mean = posterior_mean - jnp.mean(posterior_mean)
+        posterior_covariance = project_zero_mean_covariance(posterior_covariance)
+    return posterior_mean, posterior_covariance
 
 
 def compute_contrast_map_moments(

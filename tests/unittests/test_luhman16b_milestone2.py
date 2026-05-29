@@ -26,6 +26,7 @@ from doraex.spectra.exojax_forward import (
 )
 from doraex.workflows.luhman16b_milestone1 import build_luhman16b_geometry
 from doraex.workflows.luhman16b_milestone2 import (
+    conditional_contrast_map_for_joint_free_t0_cloud_sample,
     run_fixed_two_column_mcmc,
     run_free_cloud_two_column_mcmc,
     run_free_t0_cloud_two_column_mcmc,
@@ -531,6 +532,39 @@ def test_joint_free_t0_cloud_two_column_model_trace_smoke():
         chip0.flux.size + chip1.flux.size,
     )
     assert zero_mean_pressure_trace["sigma_log_p"]["value"].shape == ()
+
+    sample = {
+        "A": jnp.ones(2),
+        "P": jnp.asarray(4.83),
+        "T0": jnp.asarray(1215.0),
+        "alpha": jnp.asarray(0.12),
+        "cosi": jnp.asarray(0.485),
+        "ell_b": jnp.asarray(0.3),
+        "log_p_cloud": jnp.asarray(0.5),
+        "log_w": jnp.zeros((2, chip0.flux.shape[0])),
+        "q1": jnp.asarray(0.81),
+        "q2": jnp.asarray(0.59),
+        "sigma_b": jnp.asarray(0.2),
+        "sigma_log_p": jnp.asarray(0.2),
+        "sigma_d": jnp.asarray([0.05, 0.05]),
+        "v": jnp.asarray(31.2),
+        "zeta_vmr": jnp.asarray(0.0),
+        "pressure_derivative_step": jnp.asarray(0.05),
+        "zero_mean_pressure_map": jnp.asarray(True),
+    }
+    mean, covariance = conditional_contrast_map_for_joint_free_t0_cloud_sample(
+        [chip0, chip1],
+        geometry,
+        jnp.asarray(np.stack([t0_grid, t0_grid], axis=0)),
+        jnp.asarray(np.stack([log_p_cloud_grid, log_p_cloud_grid], axis=0)),
+        jnp.asarray(np.stack(clear_alpha_vmr_grids, axis=0)),
+        jnp.asarray(np.stack(cloudy_alpha_vmr_grids, axis=0)),
+        sample,
+        alpha_grid=jnp.asarray(np.stack([alpha_grid, alpha_grid], axis=0)),
+        zeta_vmr_grid=jnp.asarray(np.stack([zeta_vmr_grid, zeta_vmr_grid], axis=0)),
+    )
+    assert abs(float(jnp.mean(mean))) < 1.0e-3
+    assert abs(float(jnp.mean(jnp.sum(covariance, axis=0)))) < 1.0e-3
 
 
 def test_free_t0_cloud_two_column_mcmc_smoke():
