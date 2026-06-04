@@ -25,6 +25,8 @@ from doraex.priors.spherical_gp import (
     add_diagonal_jitter,
     project_zero_mean_covariance,
     squared_exponential_covariance,
+    zero_mean_basis,
+    zero_mean_covariance_factor,
 )
 
 
@@ -46,6 +48,42 @@ def test_zero_mean_covariance_projection_removes_weighted_monopole():
     np.testing.assert_allclose(projected, projected.T, rtol=1.0e-12, atol=1.0e-12)
     np.testing.assert_allclose(projected @ weights, jnp.zeros(3), atol=1.0e-12)
     np.testing.assert_allclose(weights @ projected, jnp.zeros(3), atol=1.0e-12)
+
+
+def test_zero_mean_covariance_factor_spans_projected_covariance():
+    covariance = jnp.asarray(
+        [
+            [2.0, 0.3, 0.2, 0.1],
+            [0.3, 1.5, 0.4, 0.2],
+            [0.2, 0.4, 1.0, 0.5],
+            [0.1, 0.2, 0.5, 1.2],
+        ]
+    )
+    jitter = 1.0e-5
+
+    basis = zero_mean_basis(covariance.shape[0])
+    factor = zero_mean_covariance_factor(covariance, jitter=jitter)
+    projected = project_zero_mean_covariance(covariance)
+    expected = projected + jitter * (basis @ basis.T)
+
+    np.testing.assert_allclose(jnp.sum(basis, axis=0), jnp.zeros(3), atol=1.0e-12)
+    np.testing.assert_allclose(factor @ factor.T, expected, rtol=1.0e-10, atol=1.0e-10)
+
+
+def test_zero_mean_covariance_factor_is_finite_for_float32_near_singular_matrix():
+    theta = jnp.linspace(0.05, jnp.pi - 0.05, 32, dtype=jnp.float32)
+    phi = jnp.linspace(-jnp.pi, jnp.pi, 32, dtype=jnp.float32)
+    distances = angular_distance_matrix(theta, phi)
+    covariance = squared_exponential_covariance(
+        distances,
+        amplitude=jnp.asarray(0.205, dtype=jnp.float32),
+        length_scale=jnp.asarray(0.3, dtype=jnp.float32),
+    )
+
+    factor = zero_mean_covariance_factor(covariance, jitter=1.0e-4)
+
+    assert factor.dtype == jnp.float32
+    assert bool(jnp.all(jnp.isfinite(factor)))
 
 
 def _reference_incline(theta0, phi0, alpha):
