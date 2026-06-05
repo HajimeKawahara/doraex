@@ -39,9 +39,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # Install the package using PEP 517/518 (pyproject.toml)
-          pip install .
-          # Install test runner and any test-only deps if needed
-          pip install pytest
+          pip install ".[maps,dev]"
 
       # Run pytest and always produce a JUnit XML report
       - name: Run pytest
@@ -98,8 +96,7 @@ jobs:
           pip install "numpy>=2.0"
           # install radis from the master branch (0.16.4)
           pip install "radis@git+https://github.com/radis/radis.git@master"
-          pip install .
-          pip install pytest
+          pip install ".[maps,dev]"
 
       - name: Run pytest (numpy2 + radis-dev)
         run: |

@@ -662,10 +662,10 @@ def _write_joint_diagnostics(path, samples, residuals, contrast_mean, cloud_frac
                     for chip in range(right_values.shape[1])
                 ]
                 diagnostics[f"{right}_q05_by_chip"] = [
-                    float(value) for value in np.quantile(values, 0.05, axis=0)
+                    float(value) for value in np.quantile(right_values, 0.05, axis=0)
                 ]
                 diagnostics[f"{right}_q95_by_chip"] = [
-                    float(value) for value in np.quantile(values, 0.95, axis=0)
+                    float(value) for value in np.quantile(right_values, 0.95, axis=0)
                 ]
     for name in ("sigma_b", "ell_b"):
         if name in samples:
