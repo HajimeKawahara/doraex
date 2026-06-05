@@ -2327,6 +2327,7 @@ def fixed_two_column_median_sample(samples):
         "fix_geometry",
         "log_p_cloud_grid",
         "cloudy_profile_grid",
+        "cloud_pressure_derivative_grid",
         "log_p_cloud_bounds",
         "log_p_mid_bounds",
         "t0_grid",
@@ -2339,11 +2340,19 @@ def fixed_two_column_median_sample(samples):
         "column_mode",
         "normalization_mode",
         "pressure_derivative_step",
+        "pressure_derivative_method",
         "zero_mean_pressure_map",
+        "standardized_parameter_names",
+        "standardized_parameter_centers",
+        "standardized_parameter_scales",
+        "atmosphere_rotation_slope_names",
+        "atmosphere_rotation_slopes",
     }
     for name, values in samples.items():
         array = np.asarray(values)
         if array.ndim == 0 or name in skip_names:
+            continue
+        if array.dtype.kind not in "biufc":
             continue
         result[name] = jnp.asarray(np.median(array, axis=0))
     if "fixed_cloud_delta" in samples:

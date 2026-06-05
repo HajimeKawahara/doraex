@@ -442,7 +442,6 @@ class Luhman16BPowerLawColumnModel:
         )
 
     def _load_molecular_opacities(self, t_low, t_high):
-        from exojax.database import MdbExomol
         from exojax.opacity import OpaPremodit, saveopa
 
         elower_max = {
@@ -459,6 +458,8 @@ class Luhman16BPowerLawColumnModel:
                 opa = OpaPremodit.from_saved_opa(str(cache_path))
                 molmass = opa.aux["molmass"]
             else:
+                from exojax.database import MdbExomol
+
                 mdb = MdbExomol(
                     self.molecule_paths[molecule],
                     nurange=self.nu_grid,
@@ -480,14 +481,14 @@ class Luhman16BPowerLawColumnModel:
             mol_masses[molecule] = molmass
         return opacities, mol_masses
 
-    def _abundances(self):
+    def _abundances(self, zeta_vmr=0.0):
         jnp = self.jnp
         params = self.parameters
         vmr = {
-            "CO": 10.0**params.log_vmr_co,
-            "H2O": 10.0**params.log_vmr_h2o,
-            "CH4": 10.0**params.log_vmr_ch4,
-            "HF": 10.0**params.log_vmr_hf,
+            "CO": 10.0 ** (params.log_vmr_co + zeta_vmr),
+            "H2O": 10.0 ** (params.log_vmr_h2o + zeta_vmr),
+            "CH4": 10.0 ** (params.log_vmr_ch4 + zeta_vmr),
+            "HF": 10.0 ** (params.log_vmr_hf + zeta_vmr),
         }
         heavy_sum = sum(vmr.values())
         vmr_h2 = (1.0 - heavy_sum) * params.h2_fraction_ratio
@@ -505,9 +506,9 @@ class Luhman16BPowerLawColumnModel:
         }
         return mmr, jnp.asarray(vmr_h2), jnp.asarray(vmr_he), jnp.asarray(mmw)
 
-    def _dtau_molecular_and_cia(self, temperature, gravity):
+    def _dtau_molecular_and_cia(self, temperature, gravity, zeta_vmr=0.0):
         jnp = self.jnp
-        mmr, vmr_h2, vmr_he, mmw = self._abundances()
+        mmr, vmr_h2, vmr_he, mmw = self._abundances(zeta_vmr=zeta_vmr)
         dtau = 0.0
         for molecule, opa in self.opacities.items():
             xsmatrix = opa.xsmatrix(temperature, self.art.pressure)
@@ -533,19 +534,21 @@ class Luhman16BPowerLawColumnModel:
         )
         return dtau
 
-    def _cloud_dtau(self):
+    def _cloud_dtau(self, log_p_cloud=None):
         jnp = self.jnp
         params = self.parameters
+        if log_p_cloud is None:
+            log_p_cloud = params.log_p_cloud
         log_pressure = jnp.log10(self.art.pressure)
         norm = params.cloud_column_optical_depth / (
             jnp.sqrt(2.0 * jnp.pi) * params.cloud_width
         )
         return norm * jnp.exp(
-            -((log_pressure - params.log_p_cloud) ** 2)
+            -((log_pressure - log_p_cloud) ** 2)
             / (2.0 * params.cloud_width**2)
         )
 
-    def evaluate(self, cloudy):
+    def evaluate(self, cloudy, log_p_cloud=None):
         """Evaluate one fixed local spectrum."""
 
         from exojax.postproc.response import ipgauss_sampling
@@ -556,7 +559,7 @@ class Luhman16BPowerLawColumnModel:
         gravity = 10.0**params.logg
         dtau = self._dtau_molecular_and_cia(temperature, gravity)
         if cloudy:
-            dtau = dtau + self._cloud_dtau()[:, None]
+            dtau = dtau + self._cloud_dtau(log_p_cloud)[:, None]
         flux = self.art.run(dtau, temperature)
         flux = flux / jnp.average(flux)
         return ipgauss_sampling(
@@ -577,6 +580,37 @@ class Luhman16BPowerLawColumnModel:
         """Return the fixed cloudy local spectrum."""
 
         return self.evaluate(cloudy=True)
+
+    def cloudy_at_log_p(self, log_p_cloud):
+        """Return the cloudy local spectrum at an explicit log10 cloud pressure."""
+
+        return self.evaluate(cloudy=True, log_p_cloud=log_p_cloud)
+
+    def cloudy_at_parameters(self, t0, alpha, zeta_vmr, log_p_cloud):
+        """Return the cloudy local spectrum at explicit atmospheric parameters."""
+
+        from exojax.postproc.response import ipgauss_sampling
+
+        jnp = self.jnp
+        params = self.parameters
+        temperature = self.art.powerlaw_temperature(t0, alpha)
+        gravity = 10.0**params.logg
+        dtau = self._dtau_molecular_and_cia(
+            temperature,
+            gravity,
+            zeta_vmr=zeta_vmr,
+        )
+        dtau = dtau + self._cloud_dtau(log_p_cloud)[:, None]
+        flux = self.art.run(dtau, temperature)
+        flux = flux / jnp.average(flux)
+        return ipgauss_sampling(
+            self.observed_nu,
+            self.nu_grid,
+            flux,
+            self.beta_inst,
+            params.rv,
+            self.velocity_kernel,
+        )
 
 
 def _opacity_cache_namespace(
