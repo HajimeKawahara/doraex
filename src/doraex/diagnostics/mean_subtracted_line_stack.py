@@ -314,6 +314,30 @@ def parse_args():
     )
     parser.add_argument("--model-minima-line-alpha", type=float, default=0.18)
     parser.add_argument("--model-minima-linewidth", type=float, default=0.6)
+    parser.add_argument(
+        "--mean-ylim-edge-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Fraction of each wavelength edge excluded when computing robust "
+            "mean-panel y-limits. The plotted data are unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--mean-ylim-percentile",
+        type=float,
+        default=None,
+        help=(
+            "If set, use this lower/upper percentile pair for robust mean-panel "
+            "y-limits instead of Matplotlib autoscaling."
+        ),
+    )
+    parser.add_argument(
+        "--mean-ylim-pad-fraction",
+        type=float,
+        default=0.08,
+        help="Padding fraction added to robust mean-panel y-limits.",
+    )
     return parser.parse_args()
 
 
@@ -634,6 +658,9 @@ def _plot_kwargs(args):
         "model_minima_percentile": 100.0,
         "model_minima_line_alpha": args.model_minima_line_alpha,
         "model_minima_linewidth": args.model_minima_linewidth,
+        "mean_ylim_edge_fraction": args.mean_ylim_edge_fraction,
+        "mean_ylim_percentile": args.mean_ylim_percentile,
+        "mean_ylim_pad_fraction": args.mean_ylim_pad_fraction,
     }
 
 

@@ -24,6 +24,9 @@ def plot_mean_subtracted_spectra(
     model_minima_percentile=35.0,
     model_minima_line_alpha=0.18,
     model_minima_linewidth=0.6,
+    mean_ylim_edge_fraction=0.0,
+    mean_ylim_percentile=None,
+    mean_ylim_pad_fraction=0.08,
 ):
     """Save a three-panel mean-subtracted prediction diagnostic."""
 
@@ -54,6 +57,9 @@ def plot_mean_subtracted_spectra(
         model_minima_percentile=model_minima_percentile,
         model_minima_line_alpha=model_minima_line_alpha,
         model_minima_linewidth=model_minima_linewidth,
+        mean_ylim_edge_fraction=mean_ylim_edge_fraction,
+        mean_ylim_percentile=mean_ylim_percentile,
+        mean_ylim_pad_fraction=mean_ylim_pad_fraction,
         show_title=True,
         show_legend=True,
     )
@@ -78,6 +84,9 @@ def plot_mean_subtracted_spectra_axes(
     model_minima_percentile=35.0,
     model_minima_line_alpha=0.18,
     model_minima_linewidth=0.6,
+    mean_ylim_edge_fraction=0.0,
+    mean_ylim_percentile=None,
+    mean_ylim_pad_fraction=0.08,
     show_title=True,
     title="Mean-subtracted spectra and reconstruction",
     show_legend=True,
@@ -164,6 +173,15 @@ def plot_mean_subtracted_spectra_axes(
         label="Model mean",
     )
     axes[1].set_ylabel("Mean flux")
+    _set_robust_mean_ylim(
+        axes[1],
+        wavelengths,
+        observed_mean,
+        model_mean,
+        edge_fraction=mean_ylim_edge_fraction,
+        percentile=mean_ylim_percentile,
+        pad_fraction=mean_ylim_pad_fraction,
+    )
     if show_legend:
         axes[1].legend(loc="best", frameon=False)
     axes[2].plot(
@@ -187,3 +205,52 @@ def plot_mean_subtracted_spectra_axes(
                     linewidth=model_minima_linewidth,
                     zorder=0,
                 )
+
+
+def _set_robust_mean_ylim(
+    axis,
+    wavelengths,
+    observed_mean,
+    model_mean,
+    *,
+    edge_fraction,
+    percentile,
+    pad_fraction,
+):
+    """Set the mean-panel y limits using edge- and percentile-clipped values."""
+
+    if percentile is None:
+        return
+    percentile = float(percentile)
+    if not 0.0 < percentile < 50.0:
+        raise ValueError("mean_ylim_percentile must be between 0 and 50.")
+    wavelengths = np.asarray(wavelengths, dtype=float)
+    values = np.concatenate(
+        [
+            np.asarray(observed_mean, dtype=float),
+            np.asarray(model_mean, dtype=float),
+        ]
+    )
+    finite_mask = np.isfinite(wavelengths)
+    edge_fraction = max(0.0, min(float(edge_fraction), 0.49))
+    if edge_fraction > 0.0 and wavelengths.size > 2:
+        lower = np.nanquantile(wavelengths, edge_fraction)
+        upper = np.nanquantile(wavelengths, 1.0 - edge_fraction)
+        finite_mask &= (wavelengths >= lower) & (wavelengths <= upper)
+    paired_mask = np.concatenate([finite_mask, finite_mask])
+    clipped_values = values[paired_mask & np.isfinite(values)]
+    if clipped_values.size < 3:
+        clipped_values = values[np.isfinite(values)]
+    if clipped_values.size == 0:
+        return
+    lower, upper = np.nanpercentile(
+        clipped_values,
+        [percentile, 100.0 - percentile],
+    )
+    if not np.isfinite(lower) or not np.isfinite(upper):
+        return
+    if upper <= lower:
+        center = 0.5 * (lower + upper)
+        lower, upper = center - 0.05, center + 0.05
+    pad = float(pad_fraction) * (upper - lower)
+    axis.set_ylim(float(lower - pad), float(upper + pad))
