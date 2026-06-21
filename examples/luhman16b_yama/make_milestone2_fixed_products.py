@@ -310,13 +310,21 @@ def _plot_figure9(wavelengths, observed, model, sigma_d, out_path):
 
     residual = observed - model
     offsets = np.arange(observed.shape[0])[:, None] * 0.12
-    fig, axes = plt.subplots(
+    fig = plt.figure(figsize=(10, 7))
+    grid = fig.add_gridspec(
         2,
-        1,
-        figsize=(10, 7),
-        sharex=True,
-        gridspec_kw={"height_ratios": [2.0, 1.0]},
+        2,
+        height_ratios=[2.0, 1.0],
+        width_ratios=[1.0, 0.035],
+        hspace=0.08,
+        wspace=0.04,
     )
+    axes = [
+        fig.add_subplot(grid[0, 0]),
+        fig.add_subplot(grid[1, 0]),
+    ]
+    colorbar_axis = fig.add_subplot(grid[1, 1])
+    axes[1].sharex(axes[0])
     for phase_index in range(observed.shape[0]):
         axes[0].plot(
             wavelengths,
@@ -344,7 +352,8 @@ def _plot_figure9(wavelengths, observed, model, sigma_d, out_path):
     )
     axes[1].set_xlabel("Wavelength [Angstrom]")
     axes[1].set_ylabel("Phase index")
-    fig.colorbar(image, ax=axes[1], label="Residual / sigma_d")
+    fig.colorbar(image, cax=colorbar_axis, label="Residual / sigma_d")
+    axes[0].tick_params(labelbottom=False)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
