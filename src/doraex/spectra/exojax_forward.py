@@ -481,15 +481,23 @@ class Luhman16BPowerLawColumnModel:
             mol_masses[molecule] = molmass
         return opacities, mol_masses
 
-    def _abundances(self, zeta_vmr=0.0):
+    def _abundances(self, zeta_vmr=0.0, log_vmr_values=None):
         jnp = self.jnp
         params = self.parameters
-        vmr = {
-            "CO": 10.0 ** (params.log_vmr_co + zeta_vmr),
-            "H2O": 10.0 ** (params.log_vmr_h2o + zeta_vmr),
-            "CH4": 10.0 ** (params.log_vmr_ch4 + zeta_vmr),
-            "HF": 10.0 ** (params.log_vmr_hf + zeta_vmr),
-        }
+        if log_vmr_values is None:
+            vmr = {
+                "CO": 10.0 ** (params.log_vmr_co + zeta_vmr),
+                "H2O": 10.0 ** (params.log_vmr_h2o + zeta_vmr),
+                "CH4": 10.0 ** (params.log_vmr_ch4 + zeta_vmr),
+                "HF": 10.0 ** (params.log_vmr_hf + zeta_vmr),
+            }
+        else:
+            vmr = {
+                "CO": 10.0 ** log_vmr_values["CO"],
+                "H2O": 10.0 ** log_vmr_values["H2O"],
+                "CH4": 10.0 ** log_vmr_values["CH4"],
+                "HF": 10.0 ** log_vmr_values["HF"],
+            }
         heavy_sum = sum(vmr.values())
         vmr_h2 = (1.0 - heavy_sum) * params.h2_fraction_ratio
         vmr_he = (1.0 - heavy_sum) * params.he_fraction_ratio
@@ -506,9 +514,18 @@ class Luhman16BPowerLawColumnModel:
         }
         return mmr, jnp.asarray(vmr_h2), jnp.asarray(vmr_he), jnp.asarray(mmw)
 
-    def _dtau_molecular_and_cia(self, temperature, gravity, zeta_vmr=0.0):
+    def _dtau_molecular_and_cia(
+        self,
+        temperature,
+        gravity,
+        zeta_vmr=0.0,
+        log_vmr_values=None,
+    ):
         jnp = self.jnp
-        mmr, vmr_h2, vmr_he, mmw = self._abundances(zeta_vmr=zeta_vmr)
+        mmr, vmr_h2, vmr_he, mmw = self._abundances(
+            zeta_vmr=zeta_vmr,
+            log_vmr_values=log_vmr_values,
+        )
         dtau = 0.0
         for molecule, opa in self.opacities.items():
             xsmatrix = opa.xsmatrix(temperature, self.art.pressure)
@@ -586,19 +603,66 @@ class Luhman16BPowerLawColumnModel:
 
         return self.evaluate(cloudy=True, log_p_cloud=log_p_cloud)
 
-    def cloudy_at_parameters(self, t0, alpha, zeta_vmr, log_p_cloud):
+    def cloudy_at_parameters(self, t0, alpha, zeta_vmr, log_p_cloud, logg=None):
         """Return the cloudy local spectrum at explicit atmospheric parameters."""
+
+        return self._evaluate_at(
+            t0,
+            alpha,
+            log_p_cloud,
+            zeta_vmr=zeta_vmr,
+            logg=logg,
+        )
+
+    def cloudy_at_log_vmrs(
+        self,
+        t0,
+        alpha,
+        log_vmr_co,
+        log_vmr_h2o,
+        log_vmr_ch4,
+        log_vmr_hf,
+        log_p_cloud,
+        logg=None,
+    ):
+        """Return the cloudy local spectrum at explicit independent VMRs."""
+
+        return self._evaluate_at(
+            t0,
+            alpha,
+            log_p_cloud,
+            log_vmr_values={
+                "CO": log_vmr_co,
+                "H2O": log_vmr_h2o,
+                "CH4": log_vmr_ch4,
+                "HF": log_vmr_hf,
+            },
+            logg=logg,
+        )
+
+    def _evaluate_at(
+        self,
+        t0,
+        alpha,
+        log_p_cloud,
+        *,
+        zeta_vmr=0.0,
+        log_vmr_values=None,
+        logg=None,
+    ):
+        """Evaluate the cloudy local spectrum at explicit atmospheric values."""
 
         from exojax.postproc.response import ipgauss_sampling
 
         jnp = self.jnp
         params = self.parameters
         temperature = self.art.powerlaw_temperature(t0, alpha)
-        gravity = 10.0**params.logg
+        gravity = 10.0 ** (params.logg if logg is None else logg)
         dtau = self._dtau_molecular_and_cia(
             temperature,
             gravity,
             zeta_vmr=zeta_vmr,
+            log_vmr_values=log_vmr_values,
         )
         dtau = dtau + self._cloud_dtau(log_p_cloud)[:, None]
         flux = self.art.run(dtau, temperature)

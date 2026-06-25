@@ -507,6 +507,7 @@ def _build_run_summary(
         "dense_mass",
         "fix_nuisance",
         "fix_logg",
+        "zero_mean_log_w",
         "fixed_logg",
         "fixed_ell_b",
         "x64",
