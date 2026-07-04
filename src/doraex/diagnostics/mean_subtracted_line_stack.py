@@ -240,6 +240,29 @@ def parse_args():
         help="Optional chip index restriction for the single-line profile figure.",
     )
     parser.add_argument(
+        "--strength-split-stack",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Create a two-column stack comparison after splitting selected "
+            "line-strength windows into weak and strong groups."
+        ),
+    )
+    parser.add_argument(
+        "--strength-split-quantile",
+        type=float,
+        default=0.5,
+        help=(
+            "Line-strength quantile used as the weak/strong stack boundary. "
+            "The default 0.5 makes a median split."
+        ),
+    )
+    parser.add_argument(
+        "--strength-split-output-name",
+        default="figure9_line_strength_split_stack.png",
+        help="Output filename for the weak/strong line-strength stack figure.",
+    )
+    parser.add_argument(
         "--composite-figure-width",
         type=float,
         default=36.0,
@@ -627,6 +650,43 @@ def _centered_window_at_center(observed, model, wavelengths, center, half_width,
     return observed_window, model_window, relative_grid
 
 
+def _centered_window_records(
+    observed,
+    model,
+    wavelengths,
+    selected_center_metadata,
+    chip_index,
+    half_width,
+    grid_count,
+):
+    """Return valid centered windows while preserving line metadata."""
+
+    records = []
+    relative_grid = np.linspace(-half_width, half_width, grid_count)
+    for metadata in selected_center_metadata:
+        center = float(metadata["center_wavelength"])
+        observed_window = _interpolate_centered_window(
+            observed,
+            wavelengths,
+            center,
+            relative_grid,
+        )
+        model_window = _interpolate_centered_window(
+            model,
+            wavelengths,
+            center,
+            relative_grid,
+        )
+        if observed_window is None or model_window is None:
+            continue
+        record = dict(metadata)
+        record["chip_index"] = int(chip_index)
+        record["observed_window"] = observed_window
+        record["model_window"] = model_window
+        records.append(record)
+    return records, relative_grid
+
+
 def _sigma_d_for_chip(samples, chip_position):
     """Return a representative noise scale for one chip position."""
 
@@ -876,6 +936,161 @@ def _plot_single_line_profile(
     return None
 
 
+def _split_line_strength_records(records, quantile):
+    """Split window records into weak/strong line-strength groups."""
+
+    finite_records = [
+        record
+        for record in records
+        if np.isfinite(float(record.get("line_strength", np.nan)))
+    ]
+    if len(finite_records) < 2:
+        return None, [], []
+    strengths = np.asarray(
+        [float(record["line_strength"]) for record in finite_records],
+        dtype=float,
+    )
+    threshold = float(np.nanquantile(strengths, quantile))
+    weak = [
+        record
+        for record in finite_records
+        if float(record["line_strength"]) <= threshold
+    ]
+    strong = [
+        record
+        for record in finite_records
+        if float(record["line_strength"]) > threshold
+    ]
+    if weak and strong:
+        return threshold, weak, strong
+
+    ranked = sorted(finite_records, key=lambda item: float(item["line_strength"]))
+    midpoint = len(ranked) // 2
+    weak = ranked[:midpoint]
+    strong = ranked[midpoint:]
+    if not weak or not strong:
+        return None, [], []
+    threshold = 0.5 * (
+        float(weak[-1]["line_strength"]) + float(strong[0]["line_strength"])
+    )
+    return threshold, weak, strong
+
+
+def _stack_record_windows(records, key):
+    """Average a list of centered observed/model window records."""
+
+    return np.mean(np.stack([record[key] for record in records], axis=0), axis=0)
+
+
+def _line_record_summary(records):
+    """Return compact JSON metadata for plotted line-window records."""
+
+    summaries = []
+    for record in records:
+        summary = {
+            "chip_index": int(record["chip_index"]),
+            "center_wavelength": float(record["center_wavelength"]),
+            "molecule": record.get("molecule"),
+            "line_strength": float(record["line_strength"]),
+        }
+        if record.get("rest_frame_center_wavelength") is not None:
+            summary["rest_frame_center_wavelength"] = float(
+                record["rest_frame_center_wavelength"]
+            )
+        if record.get("radial_velocity_kms") is not None:
+            summary["radial_velocity_kms"] = float(record["radial_velocity_kms"])
+        summaries.append(summary)
+    return summaries
+
+
+def _plot_strength_split_stack(out_dir, relative_grid, records, args):
+    """Create a weak-vs-strong line-strength stack comparison figure."""
+
+    import matplotlib.pyplot as plt
+
+    if args.center_source != "line-strength":
+        print("Line-strength split stack skipped: center source is not line-strength.")
+        return None
+    if not 0.0 < args.strength_split_quantile < 1.0:
+        raise ValueError("--strength-split-quantile must be between 0 and 1.")
+
+    threshold, weak_records, strong_records = _split_line_strength_records(
+        records,
+        args.strength_split_quantile,
+    )
+    if threshold is None:
+        print("Line-strength split stack skipped: fewer than two valid line windows.")
+        return None
+
+    if args.publication_style:
+        plt.rcParams.update(
+            {
+                "font.size": args.font_size,
+                "axes.labelsize": args.label_size,
+                "axes.titlesize": args.title_size,
+                "xtick.labelsize": args.tick_size,
+                "ytick.labelsize": args.tick_size,
+                "legend.fontsize": args.tick_size,
+            }
+        )
+    fig, axes = plt.subplots(
+        3,
+        2,
+        figsize=(0.55 * args.composite_figure_width, args.figure_height),
+        sharex="col",
+        gridspec_kw={
+            "height_ratios": [
+                args.top_height_ratio,
+                args.composite_mean_height_ratio,
+                args.composite_residual_height_ratio,
+            ],
+            "wspace": args.composite_wspace,
+            "hspace": args.composite_hspace,
+        },
+    )
+    groups = [
+        ("Weak lines", "<=", weak_records),
+        ("Strong lines", ">", strong_records),
+    ]
+    axes_kwargs = _axes_plot_kwargs(args)
+    for column, (label, relation, group_records) in enumerate(groups):
+        observed = _stack_record_windows(group_records, "observed_window")
+        model = _stack_record_windows(group_records, "model_window")
+        plot_mean_subtracted_spectra_axes(
+            axes[:, column],
+            relative_grid,
+            observed,
+            model,
+            **axes_kwargs,
+            show_title=True,
+            title=(
+                f"{label} (N={len(group_records)}, "
+                f"S {relation} {threshold:.2e})"
+            ),
+            show_legend=(column == 0),
+        )
+        axes[2, column].set_xlabel("Relative wavelength [A]")
+        if column > 0:
+            for row in range(3):
+                axes[row, column].set_ylabel("")
+        else:
+            axes[1, column].set_ylabel("Mean flux")
+            axes[2, column].set_ylabel("Residual")
+    out_path = out_dir / args.strength_split_output_name
+    fig.subplots_adjust(left=0.13, right=0.98)
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return {
+        "output_path": str(out_path),
+        "line_strength_threshold": float(threshold),
+        "line_strength_quantile": float(args.strength_split_quantile),
+        "weak_count": int(len(weak_records)),
+        "strong_count": int(len(strong_records)),
+        "weak_lines": _line_record_summary(weak_records),
+        "strong_lines": _line_record_summary(strong_records),
+    }
+
+
 def main():
     """Create minimum-centered prediction-window figures."""
 
@@ -932,6 +1147,7 @@ def main():
     joint_model_windows = []
     joint_sigma_d = []
     joint_centers = []
+    joint_window_records = []
     single_line_candidates = []
     relative_grid = np.linspace(
         -args.window_half_width,
@@ -997,25 +1213,33 @@ def main():
             candidate["rank_score"] = _single_line_score(metadata, args.center_source)
             single_line_candidates.append(candidate)
         sigma_d = _sigma_d_for_chip(samples, chip_position)
-        centered_windows, used_joint_centers, relative_grid = _centered_windows(
+        centered_records, relative_grid = _centered_window_records(
             observed,
             model,
             wavelengths,
-            window_centers,
+            selected_center_metadata,
+            chip_index,
             args.window_half_width,
             args.combined_grid_count,
         )
-        for observed_window, model_window in centered_windows:
-            joint_observed_windows.append(observed_window)
-            joint_model_windows.append(model_window)
+        for record in centered_records:
+            joint_observed_windows.append(record["observed_window"])
+            joint_model_windows.append(record["model_window"])
             joint_sigma_d.append(sigma_d)
+            joint_window_records.append(record)
         joint_centers.extend(
             [
                 {
                     "chip_index": int(chip_index),
-                    "center_wavelength": float(center),
+                    "center_wavelength": float(record["center_wavelength"]),
+                    "molecule": record.get("molecule"),
+                    "line_strength": record.get("line_strength"),
+                    "rest_frame_center_wavelength": record.get(
+                        "rest_frame_center_wavelength"
+                    ),
+                    "radial_velocity_kms": record.get("radial_velocity_kms"),
                 }
-                for center in used_joint_centers
+                for record in centered_records
             ]
         )
         if args.combined_stack:
@@ -1120,6 +1344,16 @@ def main():
                 summary["composite_summary"] = {
                     "output_path": str(composite_path),
                 }
+
+    if args.strength_split_stack:
+        strength_split_stack = _plot_strength_split_stack(
+            out_dir,
+            relative_grid,
+            joint_window_records,
+            args,
+        )
+        if strength_split_stack is not None:
+            summary["strength_split_stack"] = strength_split_stack
 
     summary_path = out_dir / "minimum_window_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

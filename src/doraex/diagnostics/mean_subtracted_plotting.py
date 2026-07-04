@@ -5,6 +5,21 @@ import os
 import numpy as np
 
 
+def _phase_colors(plt, cmap_name, count):
+    """Return phase colors, including locally defined darker variants."""
+
+    if cmap_name == "turbo_dark":
+        cmap = plt.get_cmap("turbo")
+        colors = []
+        for value in np.linspace(0.0, 1.0, count):
+            rgba = np.asarray(cmap(value), dtype=float)
+            rgba[:3] = 0.5 * rgba[:3]
+            colors.append(tuple(rgba))
+        return colors
+    cmap = plt.get_cmap(cmap_name)
+    return [cmap(value) for value in np.linspace(0.0, 1.0, count)]
+
+
 def plot_mean_subtracted_spectra(
     wavelengths,
     observed,
@@ -124,11 +139,7 @@ def plot_mean_subtracted_spectra_axes(
     )
     offsets = np.arange(observed.shape[0])[:, None] * offset_step
     if observed_color_by_phase:
-        cmap = plt.get_cmap(observed_cmap)
-        observed_colors = [
-            cmap(value)
-            for value in np.linspace(0.0, 1.0, observed.shape[0])
-        ]
+        observed_colors = _phase_colors(plt, observed_cmap, observed.shape[0])
     else:
         observed_colors = ["black"] * observed.shape[0]
     for phase_index in range(observed.shape[0]):

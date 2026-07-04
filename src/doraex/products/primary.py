@@ -140,9 +140,19 @@ DEFAULT_PRIMARY_PRODUCT_DEFINITIONS = (
         "M5-style mean-subtracted line-stack summary.",
     ),
     PrimaryProductDefinition(
+        "line_strength_split_stack",
+        "products/{prefix}_line_strength_split_stack.png",
+        "Weak/strong line-strength split mean-subtracted line-stack comparison.",
+    ),
+    PrimaryProductDefinition(
         "single_line_pressure_response",
         "products/{prefix}_single_line_pressure_response_comparison.png",
         "Single-line pressure-response comparison.",
+    ),
+    PrimaryProductDefinition(
+        "line_strength_comparison_panel",
+        "products/{prefix}_line_strength_weakref_strongtop5_binned_comparison.png",
+        "Four-column weak-reference/strong-top5 line stack and pure-line response comparison.",
     ),
 )
 
@@ -679,6 +689,7 @@ def _build_line_stack_info(line_summary: Mapping[str, object]) -> dict[str, obje
         "total_selected_line_count": len(selected_lines),
         "molecule_counts": molecule_counts,
         "selected_lines": selected_lines,
+        "strength_split_stack": line_summary.get("strength_split_stack"),
     }
 
 
@@ -1311,6 +1322,11 @@ def _run_line_stack(config: PrimaryProductConfig, *, env: Mapping[str, str]) -> 
         "--composite-summary",
         "--composite-output-name",
         f"{config.prefix}_mean_subtracted_line_stack_summary.png",
+        "--strength-split-stack",
+        "--strength-split-quantile",
+        "0.5",
+        "--strength-split-output-name",
+        f"{config.prefix}_line_strength_split_stack.png",
         "--composite-figure-width",
         "24.0",
         "--figure-height",
@@ -1340,7 +1356,7 @@ def _run_line_stack(config: PrimaryProductConfig, *, env: Mapping[str, str]) -> 
         "--mean-ylim-pad-fraction",
         "0.08",
         "--observed-alpha",
-        "0.48",
+        "0.65",
         "--observed-linewidth",
         "0.6",
         "--model-alpha",
@@ -1349,7 +1365,7 @@ def _run_line_stack(config: PrimaryProductConfig, *, env: Mapping[str, str]) -> 
         "1.8",
         "--observed-color-by-phase",
         "--observed-cmap",
-        "turbo",
+        "turbo_dark",
         "--highlight-lines",
         "2:23222.836820905963:-:deepskyblue,3:23429.59216554832:--:orange",
         "--highlight-linewidth",
@@ -1435,8 +1451,64 @@ def _run_single_line_products(config: PrimaryProductConfig, *, env: Mapping[str,
         "13.5",
         "--linewidth",
         "1.45",
+        "--phase-cmap",
+        "turbo_dark",
         "--pressure-response-panel",
         "--publication-style",
+    ]
+    _run(command, cwd=config.project_root, env=env)
+    _run_line_strength_comparison_panel(config, env=env)
+
+
+def _run_line_strength_comparison_panel(
+    config: PrimaryProductConfig,
+    *,
+    env: Mapping[str, str],
+) -> None:
+    product_dir = Path(config.product_dir)
+    products_dir = product_dir / "products"
+    script = _example_script(config.project_root, "make_line_strength_comparison_panel.py")
+    single_line_inputs = [
+        products_dir / f"{spec.stem}.npz"
+        for spec in DEFAULT_SINGLE_LINE_SPECS
+    ]
+    single_line_labels = [spec.label for spec in DEFAULT_SINGLE_LINE_SPECS]
+    command = [
+        config.python_executable,
+        str(script),
+        "--samples",
+        str(config.samples_path),
+        "--product-dir",
+        str(product_dir),
+        "--summary",
+        str(products_dir / "minimum_window_summary.json"),
+        "--single-line-inputs",
+        ",".join(str(path) for path in single_line_inputs),
+        "--single-line-labels",
+        ",".join(single_line_labels),
+        "--out",
+        str(
+            products_dir
+            / f"{config.prefix}_line_strength_weakref_strongtop5_binned_comparison.png"
+        ),
+        "--figure-width",
+        "7.25",
+        "--figure-height",
+        "10.25",
+        "--title-size",
+        "7.5",
+        "--stack-delta-scale",
+        "7.0",
+        "--stack-observed-bin-size",
+        "5",
+        "--strong-observed-bin-size",
+        "5",
+        "--weak-reference-rest-center",
+        "23427.586938716206",
+        "--strong-rest-centers",
+        "23220.849289275786,23252.030177654808,23137.086285771693,23268.235295409185,23124.545020988027",
+        "--line-match-tolerance",
+        "3.0",
     ]
     _run(command, cwd=config.project_root, env=env)
 
