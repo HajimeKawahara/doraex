@@ -130,14 +130,9 @@ DEFAULT_PRIMARY_PRODUCT_DEFINITIONS = (
         "Nuisance-parameter posterior corner plot.",
     ),
     PrimaryProductDefinition(
-        "log_w_summary",
-        "log_w_summary.png",
-        "Chip/exposure log-weight posterior summary.",
-    ),
-    PrimaryProductDefinition(
-        "log_w_corr_ellipse",
-        "log_w_corr_ellipse.png",
-        "Chip/exposure log-weight posterior correlation ellipse plot.",
+        "log_w_combined_diagnostic",
+        "log_w_combined_diagnostic.png",
+        "Chip/exposure log-weight median and posterior correlation diagnostic.",
     ),
     PrimaryProductDefinition(
         "mean_subtracted_line_stack",
@@ -145,9 +140,19 @@ DEFAULT_PRIMARY_PRODUCT_DEFINITIONS = (
         "M5-style mean-subtracted line-stack summary.",
     ),
     PrimaryProductDefinition(
+        "line_strength_split_stack",
+        "products/{prefix}_line_strength_split_stack.png",
+        "Weak/strong line-strength split mean-subtracted line-stack comparison.",
+    ),
+    PrimaryProductDefinition(
         "single_line_pressure_response",
         "products/{prefix}_single_line_pressure_response_comparison.png",
         "Single-line pressure-response comparison.",
+    ),
+    PrimaryProductDefinition(
+        "line_strength_comparison_panel",
+        "products/{prefix}_line_strength_weakref_strongtop5_binned_comparison.png",
+        "Four-column weak-reference/strong-top5 line stack and pure-line response comparison.",
     ),
 )
 
@@ -684,6 +689,7 @@ def _build_line_stack_info(line_summary: Mapping[str, object]) -> dict[str, obje
         "total_selected_line_count": len(selected_lines),
         "molecule_counts": molecule_counts,
         "selected_lines": selected_lines,
+        "strength_split_stack": line_summary.get("strength_split_stack"),
     }
 
 
@@ -974,15 +980,14 @@ def generate_corner_products(samples_path: Path | str, product_dir: Path | str) 
     return atm_path, nuisance_path
 
 
-def generate_log_w_products(samples_path: Path | str, product_dir: Path | str) -> tuple[Path, Path]:
+def generate_log_w_products(samples_path: Path | str, product_dir: Path | str) -> Path:
     """Generate compact diagnostics for the chip/exposure log-weight posterior."""
 
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-codex")
     Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
     import matplotlib.pyplot as plt
-    from matplotlib.collections import PatchCollection
-    from matplotlib.patches import Ellipse, Rectangle
     from matplotlib.colors import Normalize
+    from matplotlib.patches import Circle
 
     samples = np.load(samples_path, allow_pickle=True)
     if "log_w" not in samples.files:
@@ -993,12 +998,99 @@ def generate_log_w_products(samples_path: Path | str, product_dir: Path | str) -
 
     product_root = Path(product_dir)
     product_root.mkdir(parents=True, exist_ok=True)
-    summary_path = product_root / "log_w_summary.png"
-    corr_path = product_root / "log_w_corr_ellipse.png"
+    output_path = product_root / "log_w_combined_diagnostic.png"
 
-    _plot_log_w_summary(log_w, summary_path, plt)
-    _plot_log_w_corr_ellipse(log_w, corr_path, plt, PatchCollection, Ellipse, Rectangle, Normalize)
-    return summary_path, corr_path
+    _plot_log_w_combined_diagnostic(log_w, output_path, plt, Circle, Normalize)
+    return output_path
+
+
+def _plot_log_w_combined_diagnostic(log_w, output_path, plt, Circle, Normalize):
+    n_sample, n_chip, n_phase = log_w.shape
+    rel = 100.0 * np.expm1(log_w)
+    median_rel = np.median(rel, axis=0)
+    median_flat = median_rel.reshape(n_chip * n_phase)
+
+    flat = log_w.reshape(n_sample, n_chip * n_phase)
+    corr = np.corrcoef(flat, rowvar=False)
+    corr = np.nan_to_num(corr, nan=0.0)
+
+    n_param = n_chip * n_phase
+    labels = [f"c{chip}m{phase}" for chip in range(n_chip) for phase in range(n_phase)]
+    cmap = plt.get_cmap("RdBu_r")
+    norm = Normalize(-1.0, 1.0)
+
+    fig = plt.figure(figsize=(12.0, 13.0), dpi=220)
+    main_left = 0.08
+    main_width = 0.72
+    cbar_left = 0.835
+    cbar_width = 0.028
+    ax_top = fig.add_axes([main_left, 0.80, main_width, 0.095])
+    ax_corr = fig.add_axes([main_left, 0.08, main_width, 0.665])
+    cax_corr = fig.add_axes([cbar_left, 0.08, cbar_width, 0.665])
+
+    ax_top.set_title(r"Median relative normalization for each $\log w_{c,m}$", fontsize=16, pad=10)
+    ax_top.axhline(0.0, color="0.35", lw=0.9, ls="--")
+    x = np.arange(n_param)
+    chip_colors = plt.get_cmap("tab10")(np.arange(n_chip))
+    for chip_index in range(n_chip):
+        item = slice(chip_index * n_phase, (chip_index + 1) * n_phase)
+        ax_top.plot(
+            x[item],
+            median_flat[item],
+            marker="o",
+            ms=4.0,
+            lw=1.2,
+            color=chip_colors[chip_index],
+        )
+    ylim = max(0.35, 1.15 * float(np.nanmax(np.abs(median_flat))))
+    ax_top.set_xlim(-0.5, n_param - 0.5)
+    ax_top.set_ylim(-ylim, ylim)
+    ax_top.set_ylabel("median (%)", fontsize=12)
+    ax_top.set_xticks(np.arange(n_param))
+    ax_top.set_xticklabels([])
+    ax_top.tick_params(axis="x", length=0)
+    ax_top.tick_params(labelsize=10)
+
+    for boundary in range(n_phase, n_param, n_phase):
+        ax_top.axvline(boundary - 0.5, color="0.25", lw=1.0)
+
+    ax_corr.set_aspect("equal")
+    ax_corr.set_xlim(-0.5, n_param - 0.5)
+    ax_corr.set_ylim(n_param - 0.5, -0.5)
+    for row in range(n_param):
+        for col in range(n_param):
+            if row == col:
+                continue
+            rho = float(np.clip(corr[row, col], -1.0, 1.0))
+            circle = Circle(
+                (col, row),
+                radius=0.35,
+                facecolor=cmap(norm(rho)),
+                edgecolor="0.78",
+                linewidth=0.35,
+            )
+            ax_corr.add_patch(circle)
+
+    for boundary in range(n_phase, n_param, n_phase):
+        ax_corr.axhline(boundary - 0.5, color="0.25", lw=1.0)
+        ax_corr.axvline(boundary - 0.5, color="0.25", lw=1.0)
+
+    ax_corr.set_xticks(np.arange(n_param))
+    ax_corr.set_yticks(np.arange(n_param))
+    ax_corr.set_xticklabels(labels, rotation=90, fontsize=6)
+    ax_corr.set_yticklabels(labels, fontsize=6)
+    ax_corr.set_xlabel(r"$\log w_{c,m}$ index", fontsize=12)
+    ax_corr.set_ylabel(r"$\log w_{c,m}$ index", fontsize=12)
+    ax_corr.grid(False)
+
+    scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    scalar_mappable.set_array([])
+    colorbar = fig.colorbar(scalar_mappable, cax=cax_corr)
+    colorbar.set_label("posterior correlation", fontsize=11)
+    colorbar.ax.tick_params(labelsize=9)
+
+    fig.savefig(output_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
 
 
 def _plot_log_w_summary(log_w, output_path, plt):
@@ -1230,6 +1322,11 @@ def _run_line_stack(config: PrimaryProductConfig, *, env: Mapping[str, str]) -> 
         "--composite-summary",
         "--composite-output-name",
         f"{config.prefix}_mean_subtracted_line_stack_summary.png",
+        "--strength-split-stack",
+        "--strength-split-quantile",
+        "0.5",
+        "--strength-split-output-name",
+        f"{config.prefix}_line_strength_split_stack.png",
         "--composite-figure-width",
         "24.0",
         "--figure-height",
@@ -1259,7 +1356,7 @@ def _run_line_stack(config: PrimaryProductConfig, *, env: Mapping[str, str]) -> 
         "--mean-ylim-pad-fraction",
         "0.08",
         "--observed-alpha",
-        "0.48",
+        "0.65",
         "--observed-linewidth",
         "0.6",
         "--model-alpha",
@@ -1268,7 +1365,7 @@ def _run_line_stack(config: PrimaryProductConfig, *, env: Mapping[str, str]) -> 
         "1.8",
         "--observed-color-by-phase",
         "--observed-cmap",
-        "turbo",
+        "turbo_dark",
         "--highlight-lines",
         "2:23222.836820905963:-:deepskyblue,3:23429.59216554832:--:orange",
         "--highlight-linewidth",
@@ -1354,8 +1451,64 @@ def _run_single_line_products(config: PrimaryProductConfig, *, env: Mapping[str,
         "13.5",
         "--linewidth",
         "1.45",
+        "--phase-cmap",
+        "turbo_dark",
         "--pressure-response-panel",
         "--publication-style",
+    ]
+    _run(command, cwd=config.project_root, env=env)
+    _run_line_strength_comparison_panel(config, env=env)
+
+
+def _run_line_strength_comparison_panel(
+    config: PrimaryProductConfig,
+    *,
+    env: Mapping[str, str],
+) -> None:
+    product_dir = Path(config.product_dir)
+    products_dir = product_dir / "products"
+    script = _example_script(config.project_root, "make_line_strength_comparison_panel.py")
+    single_line_inputs = [
+        products_dir / f"{spec.stem}.npz"
+        for spec in DEFAULT_SINGLE_LINE_SPECS
+    ]
+    single_line_labels = [spec.label for spec in DEFAULT_SINGLE_LINE_SPECS]
+    command = [
+        config.python_executable,
+        str(script),
+        "--samples",
+        str(config.samples_path),
+        "--product-dir",
+        str(product_dir),
+        "--summary",
+        str(products_dir / "minimum_window_summary.json"),
+        "--single-line-inputs",
+        ",".join(str(path) for path in single_line_inputs),
+        "--single-line-labels",
+        ",".join(single_line_labels),
+        "--out",
+        str(
+            products_dir
+            / f"{config.prefix}_line_strength_weakref_strongtop5_binned_comparison.png"
+        ),
+        "--figure-width",
+        "7.25",
+        "--figure-height",
+        "10.25",
+        "--title-size",
+        "7.5",
+        "--stack-delta-scale",
+        "7.0",
+        "--stack-observed-bin-size",
+        "5",
+        "--strong-observed-bin-size",
+        "5",
+        "--weak-reference-rest-center",
+        "23427.586938716206",
+        "--strong-rest-centers",
+        "23220.849289275786,23252.030177654808,23137.086285771693,23268.235295409185,23124.545020988027",
+        "--line-match-tolerance",
+        "3.0",
     ]
     _run(command, cwd=config.project_root, env=env)
 

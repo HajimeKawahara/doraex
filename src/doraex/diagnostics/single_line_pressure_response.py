@@ -100,6 +100,16 @@ def _split_csv(text):
     return [item.strip() for item in text.split(",") if item.strip()]
 
 
+def _phase_color(plt, cmap_name, value):
+    """Return a phase color, including locally defined darker variants."""
+
+    if cmap_name == "turbo_dark":
+        rgba = np.asarray(plt.get_cmap("turbo")(value), dtype=float)
+        rgba[:3] = 0.5 * rgba[:3]
+        return tuple(rgba)
+    return plt.get_cmap(cmap_name)(value)
+
+
 def _json_path_for_npz(npz_path):
     """Return the sibling metadata JSON path for a prediction NPZ."""
 
@@ -237,7 +247,6 @@ def _plot_comparison(products, args):
         )
     product_colors = _split_csv(args.colors) if args.colors else None
     linestyles = _split_csv(args.linestyles)
-    phase_cmap = plt.get_cmap(args.phase_cmap)
     phase_count = min(item["delta_display"].shape[0] for item in products)
     if args.phase_count is not None:
         phase_count = min(phase_count, args.phase_count)
@@ -295,13 +304,21 @@ def _plot_comparison(products, args):
         mean_color = (
             product_colors[product_index % len(product_colors)]
             if product_colors
-            else phase_cmap((product_index + 0.5) / max(len(products), 1))
+            else _phase_color(
+                plt,
+                args.phase_cmap,
+                (product_index + 0.5) / max(len(products), 1),
+            )
         )
         for phase_index in range(phase_count):
             color = (
                 product_colors[product_index % len(product_colors)]
                 if product_colors
-                else phase_cmap(phase_index / max(phase_count - 1, 1))
+                else _phase_color(
+                    plt,
+                    args.phase_cmap,
+                    phase_index / max(phase_count - 1, 1),
+                )
             )
             axes[0].plot(
                 item["relative_grid"],
