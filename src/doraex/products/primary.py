@@ -120,6 +120,11 @@ DEFAULT_PRIMARY_PRODUCT_DEFINITIONS = (
         "64-bit cloud-pressure joint map product.",
     ),
     PrimaryProductDefinition(
+        "ureshino_fig10_three_map_comparison",
+        "products/{prefix}_ureshino_fig10_three_map_comparison.png",
+        "Comparison of the Doraex cloud-pressure map with Ureshino et al. and Crossfield et al. maps.",
+    ),
+    PrimaryProductDefinition(
         "corner_atm",
         "corner_atm.png",
         "Atmospheric-parameter posterior corner plot.",
