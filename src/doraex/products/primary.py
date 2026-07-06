@@ -60,6 +60,7 @@ class PrimaryProductConfig:
     run_single_line_products: bool = True
     run_corner_products: bool = True
     run_log_w_products: bool = True
+    run_linearization_check: bool = True
     x64: bool = True
     primary_dir: Path | None = None
 
@@ -159,6 +160,11 @@ DEFAULT_PRIMARY_PRODUCT_DEFINITIONS = (
         "products/{prefix}_line_strength_weakref_strongtop5_binned_comparison.png",
         "Four-column weak-reference/strong-top5 line stack and pure-line response comparison.",
     ),
+    PrimaryProductDefinition(
+        "linearization_check",
+        "products/{prefix}_chip0_linearization_check_ratio_residuals.png",
+        "Chip 0 exact-vs-linear cloud-pressure response diagnostic.",
+    ),
 )
 
 
@@ -214,6 +220,8 @@ def generate_primary_products(config: PrimaryProductConfig) -> PrimaryProductRes
         generate_corner_products(samples_path, product_dir)
     if config.run_log_w_products:
         generate_log_w_products(samples_path, product_dir)
+    if config.run_linearization_check:
+        _run_linearization_check(config, env=env)
 
     paths = primary_product_paths(
         product_dir, prefix=config.prefix, chip_indices=config.chip_indices
@@ -479,6 +487,12 @@ def write_primary_info_products(
         "minimum_window_summary": str(product_dir / "products" / "minimum_window_summary.json"),
         "single_line_comparison": str(
             product_dir / "products" / f"{prefix}_single_line_pressure_response_comparison.json"
+        ),
+        "linearization_check_summary": str(
+            product_dir
+            / "products"
+            / "linearization_check"
+            / "m7_v1_chip0_linearization_check_summary.json"
         ),
     }
     info_files.append(_write_json(info_dir / "source_paths.json", source_payload))
@@ -1518,6 +1532,37 @@ def _run_line_strength_comparison_panel(
     _run(command, cwd=config.project_root, env=env)
 
 
+def _run_linearization_check(config: PrimaryProductConfig, *, env: Mapping[str, str]) -> None:
+    product_dir = Path(config.product_dir)
+    products_dir = product_dir / "products"
+    work_dir = products_dir / "linearization_check"
+    script = _example_script(config.project_root, "make_m7_v1_linearization_check.py")
+    command = [
+        config.python_executable,
+        str(script),
+        "--samples",
+        str(config.samples_path),
+        "--product-dir",
+        str(product_dir),
+        "--out-dir",
+        str(work_dir),
+        "--chip-index",
+        "0",
+        "--batch-size",
+        "16",
+        "--phase-indices",
+        "0,4,8,12",
+        "--ratio-ylim",
+        "10.0",
+    ]
+    command.append("--x64" if config.x64 else "--no-x64")
+    _run(command, cwd=config.project_root, env=env)
+    shutil.copy2(
+        work_dir / "m7_v1_chip0_linearization_check_ratio_residuals.png",
+        products_dir / f"{config.prefix}_chip0_linearization_check_ratio_residuals.png",
+    )
+
+
 def _nuisance_corner_data(samples: np.lib.npyio.NpzFile) -> tuple[np.ndarray, list[str]]:
     arrays = []
     labels = []
@@ -1595,6 +1640,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--run-corner-products", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--run-log-w-products", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--run-linearization-check", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument("--x64", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--collect-only",
@@ -1618,6 +1666,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         run_single_line_products=args.run_single_line_products and not args.collect_only,
         run_corner_products=args.run_corner_products and not args.collect_only,
         run_log_w_products=args.run_log_w_products and not args.collect_only,
+        run_linearization_check=args.run_linearization_check and not args.collect_only,
         x64=args.x64,
         primary_dir=args.primary_dir,
     )
