@@ -117,8 +117,8 @@ DEFAULT_ATMOSPHERE_CORNER_LABELS = {
 DEFAULT_PRIMARY_PRODUCT_DEFINITIONS = (
     PrimaryProductDefinition(
         "cloud_pressure_map",
-        "figure8_p_cloud_joint.png",
-        "64-bit cloud-pressure joint map product.",
+        "figure8_p_cloud_observer.png",
+        "Observer-view cloud-pressure map at four rotational phases.",
     ),
     PrimaryProductDefinition(
         "ureshino_fig10_three_map_comparison",
@@ -212,6 +212,7 @@ def generate_primary_products(config: PrimaryProductConfig) -> PrimaryProductRes
     env = _postprocess_environment(project_root)
     if config.run_map_products:
         _run_map_products(config, env=env)
+        _run_observer_view_cloud_pressure_map(config, env=env)
     if config.run_line_stack:
         _run_line_stack(config, env=env)
     if config.run_single_line_products:
@@ -965,15 +966,27 @@ def generate_corner_products(samples_path: Path | str, product_dir: Path | str) 
             quantiles=(0.16, 0.5, 0.84),
             show_titles=True,
             title_fmt=".3g",
-            title_kwargs={"fontsize": 9},
-            label_kwargs={"fontsize": 10},
+            title_kwargs={"fontsize": 14},
+            label_kwargs={"fontsize": 14},
             plot_datapoints=False,
             fill_contours=True,
             smooth=1.0,
             color="tab:blue",
         )
+        atm_figure.set_size_inches(12.0, 12.0)
+        for axis in atm_figure.axes:
+            axis.tick_params(labelsize=10)
+            axis.xaxis.labelpad = 20
+            axis.yaxis.labelpad = 20
+            if axis.get_xlabel():
+                axis.xaxis.set_label_coords(0.5, -0.55)
+            if axis.get_ylabel():
+                axis.yaxis.set_label_coords(-0.55, 0.5)
+            title = axis.get_title()
+            if "=" in title:
+                axis.set_title(title.rsplit("=", 1)[-1].strip(), fontsize=14)
         atm_path = product_root / "corner_atm.png"
-        atm_figure.savefig(atm_path, dpi=180, bbox_inches="tight")
+        atm_figure.savefig(atm_path, dpi=240, bbox_inches="tight")
         plt.close(atm_figure)
     else:
         raise ValueError(f"No atmospheric corner keys found in {samples_path}")
@@ -986,15 +999,27 @@ def generate_corner_products(samples_path: Path | str, product_dir: Path | str) 
         quantiles=(0.16, 0.5, 0.84),
         show_titles=True,
         title_fmt=".3g",
-        title_kwargs={"fontsize": 9},
-        label_kwargs={"fontsize": 10},
+        title_kwargs={"fontsize": 14},
+        label_kwargs={"fontsize": 14},
         plot_datapoints=False,
         fill_contours=True,
         smooth=1.0,
         color="tab:green",
     )
+    nuisance_figure.set_size_inches(12.0, 12.0)
+    for axis in nuisance_figure.axes:
+        axis.tick_params(labelsize=10)
+        axis.xaxis.labelpad = 20
+        axis.yaxis.labelpad = 20
+        if axis.get_xlabel():
+            axis.xaxis.set_label_coords(0.5, -0.55)
+        if axis.get_ylabel():
+            axis.yaxis.set_label_coords(-0.55, 0.5)
+        title = axis.get_title()
+        if "=" in title:
+            axis.set_title(title.rsplit("=", 1)[-1].strip(), fontsize=14)
     nuisance_path = product_root / "corner_nuisance.png"
-    nuisance_figure.savefig(nuisance_path, dpi=180, bbox_inches="tight")
+    nuisance_figure.savefig(nuisance_path, dpi=240, bbox_inches="tight")
     plt.close(nuisance_figure)
     return atm_path, nuisance_path
 
@@ -1038,7 +1063,7 @@ def _plot_log_w_combined_diagnostic(log_w, output_path, plt, Circle, Normalize):
     cmap = plt.get_cmap("RdBu_r")
     norm = Normalize(-1.0, 1.0)
 
-    fig = plt.figure(figsize=(12.0, 13.0), dpi=220)
+    fig = plt.figure(figsize=(13.5, 15.0), dpi=240)
     main_left = 0.08
     main_width = 0.72
     cbar_left = 0.835
@@ -1047,7 +1072,7 @@ def _plot_log_w_combined_diagnostic(log_w, output_path, plt, Circle, Normalize):
     ax_corr = fig.add_axes([main_left, 0.08, main_width, 0.665])
     cax_corr = fig.add_axes([cbar_left, 0.08, cbar_width, 0.665])
 
-    ax_top.set_title(r"Median relative normalization for each $\log w_{c,m}$", fontsize=16, pad=10)
+    ax_top.set_title(r"Median relative normalization for each $\log w_{c,m}$", fontsize=20, pad=12)
     ax_top.axhline(0.0, color="0.35", lw=0.9, ls="--")
     x = np.arange(n_param)
     chip_colors = plt.get_cmap("tab10")(np.arange(n_chip))
@@ -1057,18 +1082,18 @@ def _plot_log_w_combined_diagnostic(log_w, output_path, plt, Circle, Normalize):
             x[item],
             median_flat[item],
             marker="o",
-            ms=4.0,
-            lw=1.2,
+            ms=5.0,
+            lw=1.5,
             color=chip_colors[chip_index],
         )
     ylim = max(0.35, 1.15 * float(np.nanmax(np.abs(median_flat))))
     ax_top.set_xlim(-0.5, n_param - 0.5)
     ax_top.set_ylim(-ylim, ylim)
-    ax_top.set_ylabel("median (%)", fontsize=12)
+    ax_top.set_ylabel("median (%)", fontsize=15)
     ax_top.set_xticks(np.arange(n_param))
     ax_top.set_xticklabels([])
     ax_top.tick_params(axis="x", length=0)
-    ax_top.tick_params(labelsize=10)
+    ax_top.tick_params(labelsize=12)
 
     for boundary in range(n_phase, n_param, n_phase):
         ax_top.axvline(boundary - 0.5, color="0.25", lw=1.0)
@@ -1096,19 +1121,19 @@ def _plot_log_w_combined_diagnostic(log_w, output_path, plt, Circle, Normalize):
 
     ax_corr.set_xticks(np.arange(n_param))
     ax_corr.set_yticks(np.arange(n_param))
-    ax_corr.set_xticklabels(labels, rotation=90, fontsize=6)
-    ax_corr.set_yticklabels(labels, fontsize=6)
-    ax_corr.set_xlabel(r"$\log w_{c,m}$ index", fontsize=12)
-    ax_corr.set_ylabel(r"$\log w_{c,m}$ index", fontsize=12)
+    ax_corr.set_xticklabels(labels, rotation=90, fontsize=12)
+    ax_corr.set_yticklabels(labels, fontsize=12)
+    ax_corr.set_xlabel(r"$\log w_{c,m}$ index", fontsize=15)
+    ax_corr.set_ylabel(r"$\log w_{c,m}$ index", fontsize=15)
     ax_corr.grid(False)
 
     scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     scalar_mappable.set_array([])
     colorbar = fig.colorbar(scalar_mappable, cax=cax_corr)
-    colorbar.set_label("posterior correlation", fontsize=11)
-    colorbar.ax.tick_params(labelsize=9)
+    colorbar.set_label("posterior correlation", fontsize=14)
+    colorbar.ax.tick_params(labelsize=12)
 
-    fig.savefig(output_path, dpi=220, bbox_inches="tight")
+    fig.savefig(output_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -1311,6 +1336,25 @@ def _run_map_products(config: PrimaryProductConfig, *, env: Mapping[str, str]) -
         "--reuse-map-products",
     ]
     command.append("--x64" if config.x64 else "--no-x64")
+    _run(command, cwd=config.project_root, env=env)
+
+
+def _run_observer_view_cloud_pressure_map(
+    config: PrimaryProductConfig, *, env: Mapping[str, str]
+) -> None:
+    """Generate the paper-facing observer-view cloud-pressure map."""
+
+    script = _example_script(config.project_root, "make_observer_view_cloud_pressure_map.py")
+    command = [
+        config.python_executable,
+        str(script),
+        "--product-dir",
+        str(config.product_dir),
+        "--output",
+        str(Path(config.product_dir) / "figure8_p_cloud_observer.png"),
+        "--cosi",
+        "0.485",
+    ]
     _run(command, cwd=config.project_root, env=env)
 
 

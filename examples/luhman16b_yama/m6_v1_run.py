@@ -9,6 +9,7 @@ import time
 
 import jax
 import jax.numpy as jnp
+import jax.scipy.linalg as jsp_linalg
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
@@ -45,6 +46,16 @@ from generate_milestone2_t0_alpha_cloud_zeta_grid_profiles import (  # noqa: E40
 )
 
 LOG_VMR_NAMES = ("log_vmr_co", "log_vmr_h2o", "log_vmr_ch4", "log_vmr_hf")
+ATMOSPHERE_NAMES = (
+    "T0",
+    "alpha",
+    "logg",
+    "log_vmr_co",
+    "log_vmr_h2o",
+    "log_vmr_ch4",
+    "log_vmr_hf",
+    "log_p_cloud",
+)
 
 
 def parse_chips(text):
@@ -53,6 +64,15 @@ def parse_chips(text):
     values = [int(item.strip()) for item in text.split(",") if item.strip()]
     if not values:
         raise argparse.ArgumentTypeError("At least one chip index is required.")
+    return values
+
+
+def parse_float_list(text):
+    """Parse comma-separated floating point values."""
+
+    values = tuple(float(item.strip()) for item in text.split(",") if item.strip())
+    if not values:
+        raise argparse.ArgumentTypeError("At least one value is required.")
     return values
 
 
@@ -193,6 +213,72 @@ def parse_args():
     parser.add_argument("--gp-jitter", type=float, default=0.5e-6)
     parser.add_argument("--noise-jitter", type=float, default=1.0e-6)
     parser.add_argument(
+        "--eigen-basis",
+        default=None,
+        help=(
+            "Optional eigen-response basis NPZ. When supplied, the pressure "
+            "map is replaced by the selected eigen-atmosphere maps."
+        ),
+    )
+    parser.add_argument(
+        "--eigen-mode-count",
+        type=int,
+        default=None,
+        help="Number of eigenmodes from --eigen-basis to use.",
+    )
+    parser.add_argument(
+        "--eigen-fixed-ell",
+        type=float,
+        default=None,
+        help="Fixed GP length scale for eigenmode maps. Defaults to --fixed-ell-b.",
+    )
+    parser.add_argument(
+        "--eigen-sigma-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Half-normal prior scale for dimensionless eigenmode amplitudes "
+            "in direct-coordinate runs. Standardized runs use "
+            "--init-sigma-eigen as the lognormal center."
+        ),
+    )
+    parser.add_argument(
+        "--init-sigma-eigen",
+        type=float,
+        default=1.0,
+        help=(
+            "Initial value for dimensionless eigenmode map amplitudes. In "
+            "standardized runs this is also the lognormal prior center."
+        ),
+    )
+    parser.add_argument(
+        "--sigma-eigen-log-raw-scale",
+        type=float,
+        default=0.5,
+        help=(
+            "Log-space scale for standardized eigenmode amplitude raw "
+            "coordinates."
+        ),
+    )
+    parser.add_argument(
+        "--fixed-sigma-eigen",
+        type=parse_float_list,
+        default=None,
+        help=(
+            "Comma-separated fixed dimensionless eigenmode amplitudes. When "
+            "set, sigma_eigen is deterministic instead of sampled."
+        ),
+    )
+    parser.add_argument(
+        "--frozen-eigen-spectra",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use eigenspectra stored in --eigen-basis instead of recomputing "
+            "eigen-response JVPs during NUTS."
+        ),
+    )
+    parser.add_argument(
         "--init-from",
         default=str(
             ROOT
@@ -309,7 +395,136 @@ def _response_function(spectrum_function):
     return response
 
 
-def build_response_functions(args, chip_data_list):
+def _eigen_response_function(
+    spectrum_function,
+    parameter_names,
+    parameter_scales,
+    selected_v,
+):
+    """Return a function that evaluates spectrum and eigen-response JVPs."""
+
+    parameter_names = tuple(str(name) for name in parameter_names)
+    parameter_scales = jnp.asarray(parameter_scales)
+    selected_v = jnp.asarray(selected_v)
+    directions = parameter_scales[:, None] * selected_v
+
+    def response(
+        t0,
+        alpha,
+        log_vmr_co,
+        log_vmr_h2o,
+        log_vmr_ch4,
+        log_vmr_hf,
+        logg,
+        log_p_cloud,
+    ):
+        values = {
+            "T0": t0,
+            "alpha": alpha,
+            "logg": logg,
+            "log_vmr_co": log_vmr_co,
+            "log_vmr_h2o": log_vmr_h2o,
+            "log_vmr_ch4": log_vmr_ch4,
+            "log_vmr_hf": log_vmr_hf,
+            "log_p_cloud": log_p_cloud,
+        }
+        xi0 = jnp.asarray([values[name] for name in parameter_names])
+
+        def spectrum_at_xi(xi):
+            local_values = dict(values)
+            for index, name in enumerate(parameter_names):
+                local_values[name] = xi[index]
+            return spectrum_function(
+                local_values["T0"],
+                local_values["alpha"],
+                local_values["log_vmr_co"],
+                local_values["log_vmr_h2o"],
+                local_values["log_vmr_ch4"],
+                local_values["log_vmr_hf"],
+                local_values["log_p_cloud"],
+                logg=local_values["logg"],
+            )
+
+        base_profile = spectrum_at_xi(xi0)
+
+        eigen_profiles = []
+        for mode_index in range(selected_v.shape[1]):
+            _, tangent = jax.jvp(
+                spectrum_at_xi,
+                (xi0,),
+                (directions[:, mode_index],),
+            )
+            eigen_profiles.append(tangent)
+        eigen_profiles = jnp.stack(eigen_profiles, axis=0)
+        return base_profile, eigen_profiles
+
+    return response
+
+
+def _frozen_eigen_response_function(spectrum_function, eigen_profiles):
+    """Return a response function with fixed precomputed eigenspectra."""
+
+    eigen_profiles = jnp.asarray(eigen_profiles)
+
+    def response(
+        t0,
+        alpha,
+        log_vmr_co,
+        log_vmr_h2o,
+        log_vmr_ch4,
+        log_vmr_hf,
+        logg,
+        log_p_cloud,
+    ):
+        base_profile = spectrum_function(
+            t0,
+            alpha,
+            log_vmr_co,
+            log_vmr_h2o,
+            log_vmr_ch4,
+            log_vmr_hf,
+            log_p_cloud,
+            logg=logg,
+        )
+        return base_profile, eigen_profiles
+
+    return response
+
+
+def load_eigen_basis(path, mode_count=None):
+    """Load an eigen-response basis archive for E-series experiments."""
+
+    if path is None:
+        return None
+    basis = np.load(path, allow_pickle=False)
+    parameter_names = tuple(str(name) for name in basis["parameter_names"])
+    parameter_scales = np.asarray(basis["parameter_scales"], dtype=float)
+    selected_v = np.asarray(basis["selected_v"], dtype=float)
+    if mode_count is not None:
+        if mode_count > selected_v.shape[1]:
+            raise ValueError(
+                f"Requested {mode_count} eigenmodes, but basis contains "
+                f"{selected_v.shape[1]} selected modes."
+            )
+        selected_v = selected_v[:, :mode_count]
+    if selected_v.ndim != 2 or selected_v.shape[0] != len(parameter_names):
+        raise ValueError(
+            "Eigen basis selected_v must have shape "
+            "(n_parameter, n_mode)."
+        )
+    if len(parameter_scales) != len(parameter_names):
+        raise ValueError("Eigen basis parameter scales do not match names.")
+    return {
+        "path": str(path),
+        "parameter_names": parameter_names,
+        "parameter_scales": parameter_scales,
+        "selected_v": selected_v,
+        "mode_count": int(selected_v.shape[1]),
+        "npz": basis,
+    }
+
+
+def build_response_functions(args, chip_data_list, eigen_basis=None):
     """Build on-the-fly ExoJAX spectrum/pressure-response functions."""
 
     response_functions = []
@@ -322,7 +537,30 @@ def build_response_functions(args, chip_data_list):
             parameters=YAMA_L16B_EXOMOL_ATMOSPHERE,
             nx=args.nx,
         )
-        response_functions.append(_response_function(model.cloudy_at_log_vmrs))
+        if eigen_basis is None:
+            response_functions.append(_response_function(model.cloudy_at_log_vmrs))
+        elif args.frozen_eigen_spectra:
+            key = f"eigenspectra_chip{chip_data.chip_index}"
+            if key not in eigen_basis["npz"].files:
+                raise KeyError(f"Missing {key} in eigen basis {eigen_basis['path']}")
+            eigen_profiles = np.asarray(eigen_basis["npz"][key])[
+                :, : eigen_basis["mode_count"]
+            ].T
+            response_functions.append(
+                _frozen_eigen_response_function(
+                    model.cloudy_at_log_vmrs,
+                    eigen_profiles,
+                )
+            )
+        else:
+            response_functions.append(
+                _eigen_response_function(
+                    model.cloudy_at_log_vmrs,
+                    eigen_basis["parameter_names"],
+                    eigen_basis["parameter_scales"],
+                    eigen_basis["selected_v"],
+                )
+            )
     return response_functions
 
 
@@ -356,6 +594,12 @@ def on_the_fly_pressure_model(
     zero_mean_pressure_map,
     log_w_scale,
     zero_mean_log_w,
+    eigen_mode_count,
+    eigen_sigma_scale,
+    eigen_sigma_center,
+    eigen_sigma_log_raw_scale,
+    fixed_sigma_eigen,
+    eigen_fixed_ell,
     fixed_nuisance_values,
     gp_jitter,
     noise_jitter,
@@ -401,10 +645,11 @@ def on_the_fly_pressure_model(
             "log_p_cloud_raw",
             dist.Normal(0.0, 1.0),
         )
-        sigma_log_p_raw = numpyro.sample(
-            "sigma_log_p_raw",
-            dist.Normal(0.0, 1.0),
-        )
+        if eigen_mode_count is None:
+            sigma_log_p_raw = numpyro.sample(
+                "sigma_log_p_raw",
+                dist.Normal(0.0, 1.0),
+            )
         t0 = numpyro.deterministic(
             "T0",
             parameter_centers["T0"] + parameter_scales["T0"] * t0_raw,
@@ -430,13 +675,14 @@ def on_the_fly_pressure_model(
             parameter_centers["log_p_cloud"]
             + parameter_scales["log_p_cloud"] * log_p_cloud_raw,
         )
-        sigma_log_p = numpyro.deterministic(
-            "sigma_log_p",
-            jnp.exp(
-                jnp.log(parameter_centers["sigma_log_p"])
-                + parameter_scales["sigma_log_p"] * sigma_log_p_raw
-            ),
-        )
+        if eigen_mode_count is None:
+            sigma_log_p = numpyro.deterministic(
+                "sigma_log_p",
+                jnp.exp(
+                    jnp.log(parameter_centers["sigma_log_p"])
+                    + parameter_scales["sigma_log_p"] * sigma_log_p_raw
+                ),
+            )
     else:
         if fix_logg:
             logg = numpyro.deterministic("logg", jnp.asarray(fixed_logg))
@@ -466,10 +712,11 @@ def on_the_fly_pressure_model(
             "log_p_cloud",
             dist.Uniform(log_p_cloud_bounds[0], log_p_cloud_bounds[1]),
         )
-        sigma_log_p = numpyro.sample(
-            "sigma_log_p",
-            dist.HalfNormal(sigma_log_p_scale),
-        )
+        if eigen_mode_count is None:
+            sigma_log_p = numpyro.sample(
+                "sigma_log_p",
+                dist.HalfNormal(sigma_log_p_scale),
+            )
     cosi = numpyro.deterministic("cosi", jnp.asarray(fixed_cosi))
     vrot = numpyro.deterministic("v", jnp.asarray(fixed_v))
     q1 = numpyro.deterministic("q1", jnp.asarray(fixed_q1))
@@ -527,10 +774,15 @@ def on_the_fly_pressure_model(
         )
 
     baselines = []
-    contrast_matrices = []
+    if eigen_mode_count is None:
+        contrast_matrices = []
+        contrast_matrices_by_mode = None
+    else:
+        contrast_matrices = None
+        contrast_matrices_by_mode = [[] for _ in range(eigen_mode_count)]
     noise_variances = []
     for chip_index in range(n_chip):
-        base_profile, contrast_profile = response_functions[chip_index](
+        response_result = response_functions[chip_index](
             t0,
             alpha,
             log_vmrs["log_vmr_co"],
@@ -540,55 +792,145 @@ def on_the_fly_pressure_model(
             logg,
             log_p_cloud,
         )
-        baseline, contrast_matrix = linear_profile_operator_from_times(
-            theta,
-            phi,
-            vrot,
-            inclination,
-            u1,
-            u2,
-            obs_times,
-            period,
-            wavelengths[chip_index],
-            base_profile,
-            contrast_profile,
-            weights=jnp.exp(log_w[chip_index]),
-        )
-        norm = normalization_factor[chip_index] * jnp.mean(baseline)
-        baseline = baseline / norm
-        contrast_matrix = contrast_matrix / norm
+        if eigen_mode_count is None:
+            base_profile, contrast_profile = response_result
+            baseline, contrast_matrix = linear_profile_operator_from_times(
+                theta,
+                phi,
+                vrot,
+                inclination,
+                u1,
+                u2,
+                obs_times,
+                period,
+                wavelengths[chip_index],
+                base_profile,
+                contrast_profile,
+                weights=jnp.exp(log_w[chip_index]),
+            )
+            norm = normalization_factor[chip_index] * jnp.mean(baseline)
+            baseline = baseline / norm
+            contrast_matrix = contrast_matrix / norm
+        else:
+            base_profile, eigen_profiles = response_result
+            chip_contrast_matrices = []
+            baseline = None
+            norm = None
+            for mode_index in range(eigen_mode_count):
+                mode_baseline, mode_contrast_matrix = linear_profile_operator_from_times(
+                    theta,
+                    phi,
+                    vrot,
+                    inclination,
+                    u1,
+                    u2,
+                    obs_times,
+                    period,
+                    wavelengths[chip_index],
+                    base_profile,
+                    eigen_profiles[mode_index],
+                    weights=jnp.exp(log_w[chip_index]),
+                )
+                if baseline is None:
+                    baseline = mode_baseline
+                    norm = normalization_factor[chip_index] * jnp.mean(baseline)
+                    baseline = baseline / norm
+                chip_contrast_matrices.append(mode_contrast_matrix / norm)
         baselines.append(baseline)
-        contrast_matrices.append(contrast_matrix)
+        if eigen_mode_count is None:
+            contrast_matrices.append(contrast_matrix)
+        else:
+            for mode_index, mode_matrix in enumerate(chip_contrast_matrices):
+                contrast_matrices_by_mode[mode_index].append(mode_matrix)
         noise_variances.append(
             diagonal_noise_variance(
-                contrast_matrix.shape[0],
+                baseline.shape[0],
                 sigma_d[chip_index],
                 jitter=noise_jitter,
             )
         )
 
     baseline = jnp.concatenate(baselines, axis=0)
-    contrast_matrix = jnp.concatenate(contrast_matrices, axis=0)
+    if eigen_mode_count is None:
+        contrast_matrix = jnp.concatenate(contrast_matrices, axis=0)
+    else:
+        contrast_matrix = jnp.concatenate(
+            [
+                jnp.concatenate(mode_matrices, axis=0)
+                for mode_matrices in contrast_matrices_by_mode
+            ],
+            axis=1,
+        )
     noise_variance = jnp.concatenate(noise_variances, axis=0)
 
-    numpyro.deterministic("sigma_b", sigma_log_p)
-    ell_b = numpyro.deterministic("ell_b", jnp.asarray(fixed_ell_b))
-    contrast_covariance = squared_exponential_covariance(
-        distance_matrix,
-        sigma_log_p,
-        ell_b,
-    )
-    if zero_mean_pressure_map:
-        map_factor = zero_mean_covariance_factor(
-            contrast_covariance,
-            jitter=gp_jitter,
+    if eigen_mode_count is None:
+        numpyro.deterministic("sigma_b", sigma_log_p)
+        ell_b = numpyro.deterministic("ell_b", jnp.asarray(fixed_ell_b))
+        contrast_covariance = squared_exponential_covariance(
+            distance_matrix,
+            sigma_log_p,
+            ell_b,
         )
+        if zero_mean_pressure_map:
+            map_factor = zero_mean_covariance_factor(
+                contrast_covariance,
+                jitter=gp_jitter,
+            )
+        else:
+            contrast_covariance = add_diagonal_jitter(
+                contrast_covariance,
+                jitter=gp_jitter,
+            )
+            map_factor = jnp.linalg.cholesky(contrast_covariance)
     else:
-        contrast_covariance = add_diagonal_jitter(
-            contrast_covariance,
-            jitter=gp_jitter,
+        if fixed_sigma_eigen is not None:
+            sigma_eigen = numpyro.deterministic(
+                "sigma_eigen",
+                jnp.asarray(fixed_sigma_eigen),
+            )
+        elif standardized_parameters:
+            sigma_eigen_raw = numpyro.sample(
+                "sigma_eigen_raw",
+                dist.Normal(0.0, 1.0).expand([eigen_mode_count]),
+            )
+            sigma_eigen = numpyro.deterministic(
+                "sigma_eigen",
+                jnp.exp(
+                    jnp.log(eigen_sigma_center)
+                    + eigen_sigma_log_raw_scale * sigma_eigen_raw
+                ),
+            )
+        else:
+            sigma_eigen = numpyro.sample(
+                "sigma_eigen",
+                dist.HalfNormal(eigen_sigma_scale).expand([eigen_mode_count]),
+            )
+        numpyro.deterministic("sigma_b", sigma_eigen[0])
+        ell_eigen = numpyro.deterministic(
+            "ell_eigen",
+            jnp.full((eigen_mode_count,), eigen_fixed_ell),
         )
-        map_factor = jnp.linalg.cholesky(contrast_covariance)
+        mode_factors = []
+        eigen_gp_jitter = jnp.maximum(jnp.asarray(gp_jitter), jnp.asarray(5.0e-6))
+        for mode_index in range(eigen_mode_count):
+            unit_covariance = squared_exponential_covariance(
+                distance_matrix,
+                jnp.asarray(1.0),
+                ell_eigen[mode_index],
+            )
+            if zero_mean_pressure_map:
+                unit_factor = zero_mean_covariance_factor(
+                    unit_covariance,
+                    jitter=eigen_gp_jitter,
+                )
+            else:
+                unit_covariance = add_diagonal_jitter(
+                    unit_covariance,
+                    jitter=eigen_gp_jitter,
+                )
+                unit_factor = jnp.linalg.cholesky(unit_covariance)
+            mode_factors.append(sigma_eigen[mode_index] * unit_factor)
+        map_factor = jsp_linalg.block_diag(*mode_factors)
     covariance_factor = contrast_matrix @ map_factor
     numpyro.sample(
         "obs",
@@ -721,8 +1063,9 @@ def build_sampling_initial_values(args, physical_init_values, fixed_nuisance_val
             "T0_raw": jnp.asarray(0.0),
             "alpha_raw": jnp.asarray(0.0),
             "log_p_cloud_raw": jnp.asarray(0.0),
-            "sigma_log_p_raw": jnp.asarray(0.0),
         }
+        if args.eigen_basis is None:
+            init_values["sigma_log_p_raw"] = jnp.asarray(0.0)
         if not args.fix_logg:
             init_values["logg_raw"] = jnp.asarray(0.0)
         init_values.update({f"{name}_raw": jnp.asarray(0.0) for name in LOG_VMR_NAMES})
@@ -737,18 +1080,37 @@ def build_sampling_initial_values(args, physical_init_values, fixed_nuisance_val
                     "sigma_d": physical_init_values["sigma_d"],
                 }
             )
+        if args.eigen_basis is not None and args.fixed_sigma_eigen is None:
+            init_values["sigma_eigen_raw"] = jnp.zeros((args.eigen_mode_count,))
         return init_values
 
     if fixed_nuisance_values is None:
         init_values = dict(physical_init_values)
         if args.zero_mean_log_w:
             init_values["log_w_raw"] = _zero_mean_log_w(init_values.pop("log_w"))
+        if args.eigen_basis is not None and args.fixed_sigma_eigen is None:
+            if args.standardized_parameters:
+                init_values["sigma_eigen_raw"] = jnp.zeros((args.eigen_mode_count,))
+            else:
+                init_values["sigma_eigen"] = jnp.full(
+                    (args.eigen_mode_count,),
+                    args.init_sigma_eigen,
+                )
         return init_values
-    return {
+    init_values = {
         name: value
         for name, value in physical_init_values.items()
         if name not in fixed_nuisance_values
     }
+    if args.eigen_basis is not None and args.fixed_sigma_eigen is None:
+        if args.standardized_parameters:
+            init_values["sigma_eigen_raw"] = jnp.zeros((args.eigen_mode_count,))
+        else:
+            init_values["sigma_eigen"] = jnp.full(
+                (args.eigen_mode_count,),
+                args.init_sigma_eigen,
+            )
+    return init_values
 
 
 def maybe_find_map_init(args, model, init_values):
@@ -774,6 +1136,20 @@ def main():
     args = parse_args()
     if args.rotated_atmosphere_parameters:
         args.standardized_parameters = True
+    eigen_basis = load_eigen_basis(args.eigen_basis, args.eigen_mode_count)
+    if eigen_basis is not None:
+        args.eigen_mode_count = eigen_basis["mode_count"]
+        if (
+            args.fixed_sigma_eigen is not None
+            and len(args.fixed_sigma_eigen) != args.eigen_mode_count
+        ):
+            raise ValueError(
+                "--fixed-sigma-eigen length must match --eigen-mode-count "
+                f"({len(args.fixed_sigma_eigen)} != {args.eigen_mode_count})."
+            )
+    if args.eigen_mode_count is None:
+        args.eigen_mode_count = 0
+    eigen_fixed_ell = args.fixed_ell_b if args.eigen_fixed_ell is None else args.eigen_fixed_ell
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
     jax.config.update("jax_enable_x64", args.x64)
 
@@ -792,7 +1168,7 @@ def main():
     obs_times = jnp.asarray(chip_data_list[0].obs_times)
 
     setup_start = time.time()
-    response_functions = build_response_functions(args, chip_data_list)
+    response_functions = build_response_functions(args, chip_data_list, eigen_basis=eigen_basis)
     setup_seconds = time.time() - setup_start
 
     preflight_t0 = jnp.asarray(args.init_t0)
@@ -922,6 +1298,16 @@ def main():
             zero_mean_pressure_map=args.zero_mean_pressure_map,
             log_w_scale=args.log_w_scale,
             zero_mean_log_w=args.zero_mean_log_w,
+            eigen_mode_count=(None if eigen_basis is None else args.eigen_mode_count),
+            eigen_sigma_scale=args.eigen_sigma_scale,
+            eigen_sigma_center=jnp.asarray(args.init_sigma_eigen),
+            eigen_sigma_log_raw_scale=jnp.asarray(args.sigma_eigen_log_raw_scale),
+            fixed_sigma_eigen=(
+                None
+                if args.fixed_sigma_eigen is None
+                else jnp.asarray(args.fixed_sigma_eigen)
+            ),
+            eigen_fixed_ell=eigen_fixed_ell,
             fixed_nuisance_values=fixed_nuisance_values,
             gp_jitter=args.gp_jitter,
             noise_jitter=args.noise_jitter,
@@ -1047,7 +1433,28 @@ def main():
             ),
             "zero_mean_pressure_map": np.asarray(args.zero_mean_pressure_map),
             "zero_mean_log_w": np.asarray(args.zero_mean_log_w),
-            "pressure_derivative_method": np.asarray("on_the_fly_autodiff"),
+            "eigen_basis": np.asarray("" if args.eigen_basis is None else args.eigen_basis),
+            "eigen_mode_count": np.asarray(args.eigen_mode_count),
+            "eigen_fixed_ell": np.asarray(eigen_fixed_ell),
+            "eigen_sigma_scale": np.asarray(args.eigen_sigma_scale),
+            "init_sigma_eigen": np.asarray(args.init_sigma_eigen),
+            "sigma_eigen_log_raw_scale": np.asarray(args.sigma_eigen_log_raw_scale),
+            "fixed_sigma_eigen": np.asarray(
+                []
+                if args.fixed_sigma_eigen is None
+                else args.fixed_sigma_eigen,
+                dtype=float,
+            ),
+            "frozen_eigen_spectra": np.asarray(args.frozen_eigen_spectra),
+            "pressure_derivative_method": np.asarray(
+                (
+                    "eigen_atmosphere_frozen_response"
+                    if args.frozen_eigen_spectra
+                    else "eigen_atmosphere_on_the_fly_autodiff"
+                )
+                if eigen_basis is not None
+                else "on_the_fly_autodiff"
+            ),
             "full_data": np.asarray(args.full_data),
             "preflight_autodiff": np.asarray(args.preflight_autodiff),
             "dense_mass": np.asarray(args.dense_mass),
@@ -1066,6 +1473,10 @@ def main():
         )
         save_data[f"flux_chip{chip_data.chip_index}"] = np.asarray(chip_data.flux)
         save_data[f"chip_position_{chip_position}"] = np.asarray(chip_data.chip_index)
+    if eigen_basis is not None:
+        save_data["eigen_parameter_names"] = np.asarray(eigen_basis["parameter_names"])
+        save_data["eigen_parameter_scales"] = np.asarray(eigen_basis["parameter_scales"])
+        save_data["eigen_selected_v"] = np.asarray(eigen_basis["selected_v"])
     np.savez(output_path, **save_data)
     log_vmr_bounds = {
         "log_vmr_co": [args.log_vmr_co_min, args.log_vmr_co_max],
@@ -1127,6 +1538,16 @@ def main():
         },
         "zero_mean_pressure_map": args.zero_mean_pressure_map,
         "zero_mean_log_w": args.zero_mean_log_w,
+        "eigen_basis": None if args.eigen_basis is None else args.eigen_basis,
+        "eigen_mode_count": args.eigen_mode_count,
+        "eigen_fixed_ell": eigen_fixed_ell,
+        "eigen_sigma_scale": args.eigen_sigma_scale,
+        "init_sigma_eigen": args.init_sigma_eigen,
+        "sigma_eigen_log_raw_scale": args.sigma_eigen_log_raw_scale,
+        "fixed_sigma_eigen": (
+            None if args.fixed_sigma_eigen is None else list(args.fixed_sigma_eigen)
+        ),
+        "frozen_eigen_spectra": args.frozen_eigen_spectra,
         "standardized_parameters": args.standardized_parameters,
         "rotated_atmosphere_parameters": args.rotated_atmosphere_parameters,
         "manual_atmosphere_init": args.manual_atmosphere_init,
