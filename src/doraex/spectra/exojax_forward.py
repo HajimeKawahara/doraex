@@ -386,11 +386,13 @@ class Luhman16BPowerLawColumnModel:
         t_low=210.0,
         t_high=3500.0,
         resolving_power=100000.0,
+        save_opacity_cache=True,
     ):
         """Initialize the ExoJAX objects for fixed-profile generation."""
 
         self.observed_wavelengths = np.asarray(observed_wavelengths)
         self.parameters = parameters
+        self.save_opacity_cache = bool(save_opacity_cache)
         self.molecule_paths = {key: str(value) for key, value in molecule_paths.items()}
         self.cia_paths = {key: str(value) for key, value in cia_paths.items()}
         self.opacity_cache_dir = _opacity_cache_namespace(
@@ -476,7 +478,8 @@ class Luhman16BPowerLawColumnModel:
                     auto_trange=[t_low, t_high],
                     dit_grid_resolution=1.0,
                 )
-                saveopa(opa, str(cache_path), format="zarr", aux={"molmass": molmass})
+                if self.save_opacity_cache:
+                    saveopa(opa, str(cache_path), format="zarr", aux={"molmass": molmass})
             opacities[molecule] = opa
             mol_masses[molecule] = molmass
         return opacities, mol_masses
@@ -640,6 +643,38 @@ class Luhman16BPowerLawColumnModel:
             logg=logg,
         )
 
+    def cloudy_raw_at_log_vmrs(
+        self,
+        t0,
+        alpha,
+        log_vmr_co,
+        log_vmr_h2o,
+        log_vmr_ch4,
+        log_vmr_hf,
+        log_p_cloud,
+        logg=None,
+    ):
+        """Return the unnormalized cloudy emergent spectrum.
+
+        This is intended for derived band-intensity products.  Retrieval
+        spectra should continue to use :meth:`cloudy_at_log_vmrs`, which
+        removes the wavelength-mean flux before instrumental sampling.
+        """
+
+        return self._evaluate_at(
+            t0,
+            alpha,
+            log_p_cloud,
+            log_vmr_values={
+                "CO": log_vmr_co,
+                "H2O": log_vmr_h2o,
+                "CH4": log_vmr_ch4,
+                "HF": log_vmr_hf,
+            },
+            logg=logg,
+            normalize=False,
+        )
+
     def _evaluate_at(
         self,
         t0,
@@ -649,6 +684,7 @@ class Luhman16BPowerLawColumnModel:
         zeta_vmr=0.0,
         log_vmr_values=None,
         logg=None,
+        normalize=True,
     ):
         """Evaluate the cloudy local spectrum at explicit atmospheric values."""
 
@@ -666,7 +702,8 @@ class Luhman16BPowerLawColumnModel:
         )
         dtau = dtau + self._cloud_dtau(log_p_cloud)[:, None]
         flux = self.art.run(dtau, temperature)
-        flux = flux / jnp.average(flux)
+        if normalize:
+            flux = flux / jnp.average(flux)
         return ipgauss_sampling(
             self.observed_nu,
             self.nu_grid,
