@@ -27,6 +27,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Required by launcher syntax tests that execute `tcsh -n`.
+      - name: Install tcsh
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes tcsh
+
       # Set up Python with pip cache
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -82,6 +88,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Required by launcher syntax tests that execute `tcsh -n`.
+      - name: Install tcsh
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes tcsh
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
