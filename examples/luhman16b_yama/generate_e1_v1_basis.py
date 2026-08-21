@@ -17,6 +17,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from doraex.data.luhman16b import Luhman16BChipData  # noqa: E402
+from doraex.operators.doppler import doppler_padded_wavelengths  # noqa: E402
 from doraex.spectra.exojax_forward import Luhman16BPowerLawColumnModel  # noqa: E402
 from generate_milestone2_t0_alpha_cloud_zeta_grid_profiles import (  # noqa: E402
     YAMA_L16B_EXOMOL_ATMOSPHERE,
@@ -172,6 +173,24 @@ def _basis_center(samples):
     }
 
 
+def _profile_wavelengths_from_samples(samples, chip_data_list):
+    """Load saved profile grids or reconstruct them from the sampled velocity."""
+
+    max_abs_velocity = abs(_median_or_default(samples, "v", 31.2))
+    profile_wavelengths = []
+    for chip_data in chip_data_list:
+        key = f"profile_wavelengths_chip{chip_data.chip_index}"
+        if key in samples.files:
+            profile_grid = np.asarray(samples[key])
+        else:
+            profile_grid = doppler_padded_wavelengths(
+                chip_data.wavelengths,
+                max_abs_velocity,
+            )
+        profile_wavelengths.append(profile_grid)
+    return profile_wavelengths
+
+
 def _xi_vector(center, parameter_names):
     """Return a vector of selected atmospheric parameters."""
 
@@ -206,7 +225,13 @@ def _spectrum_function(model, center, parameter_names):
     return spectrum
 
 
-def _build_chip_jacobian(args, chip_data, center, parameter_names):
+def _build_chip_jacobian(
+    args,
+    chip_data,
+    center,
+    parameter_names,
+    profile_wavelengths=None,
+):
     """Evaluate the local spectrum and Jacobian for one chip."""
 
     model = Luhman16BPowerLawColumnModel(
@@ -216,6 +241,7 @@ def _build_chip_jacobian(args, chip_data, center, parameter_names):
         opacity_cache_dir=args.opacity_cache_dir,
         parameters=YAMA_L16B_EXOMOL_ATMOSPHERE,
         nx=args.nx,
+        sampling_wavelengths=profile_wavelengths,
     )
     spectrum = _spectrum_function(model, center, parameter_names)
     xi0 = _xi_vector(center, parameter_names)
@@ -247,6 +273,10 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     center = _basis_center(samples)
     chip_data_list = _load_chip_data_from_samples(samples, chip_indices)
+    profile_wavelengths = _profile_wavelengths_from_samples(
+        samples,
+        chip_data_list,
+    )
 
     start = time.time()
     spectra = []
@@ -258,6 +288,7 @@ def main():
             chip_data,
             center,
             parameter_names,
+            profile_wavelengths[chip_position],
         )
         jacobian = np.asarray(jacobian)
         spectrum = np.asarray(spectrum)
@@ -288,6 +319,9 @@ def main():
     for chip_position, chip_index in enumerate(chip_indices):
         payload[f"spectrum_chip{chip_index}"] = spectra[chip_position]
         payload[f"jacobian_chip{chip_index}"] = jacobians[chip_position]
+        payload[f"profile_wavelengths_chip{chip_index}"] = profile_wavelengths[
+            chip_position
+        ]
         payload[f"eigenspectra_chip{chip_index}"] = (
             jacobians[chip_position] * np.asarray(parameter_scales)[None, :]
         ) @ selected_v

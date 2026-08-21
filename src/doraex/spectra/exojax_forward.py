@@ -7,6 +7,35 @@ from pathlib import Path
 
 import numpy as np
 
+from doraex.constants import SPEED_OF_LIGHT
+
+
+def _internal_spectrum_wavelength_bounds(
+    observed_wavelengths,
+    sampling_wavelengths=None,
+    *,
+    systemic_rv=0.0,
+    margin=5.0,
+):
+    """Return internal RT-grid bounds that cover all sampling queries."""
+
+    observed_wavelengths = np.asarray(observed_wavelengths)
+    lower = np.min(observed_wavelengths) - margin
+    upper = np.max(observed_wavelengths) + margin
+    if sampling_wavelengths is None:
+        return np.asarray([lower, upper])
+
+    rv_factor = 1.0 + systemic_rv / (SPEED_OF_LIGHT * 1.0e-3)
+    if rv_factor <= 0.0:
+        raise ValueError("The systemic RV must be greater than -c.")
+    source_wavelengths = np.asarray(sampling_wavelengths) / rv_factor
+    return np.asarray(
+        [
+            min(lower, np.min(source_wavelengths) - margin),
+            max(upper, np.max(source_wavelengths) + margin),
+        ]
+    )
+
 
 @dataclass(frozen=True)
 class FixedPowerLawAtmosphere:
@@ -387,17 +416,53 @@ class Luhman16BPowerLawColumnModel:
         t_high=3500.0,
         resolving_power=100000.0,
         save_opacity_cache=True,
+        sampling_wavelengths=None,
     ):
         """Initialize the ExoJAX objects for fixed-profile generation."""
 
         self.observed_wavelengths = np.asarray(observed_wavelengths)
+        uses_separate_sampling_grid = sampling_wavelengths is not None
+        self.sampling_wavelengths = np.asarray(
+            self.observed_wavelengths
+            if sampling_wavelengths is None
+            else sampling_wavelengths
+        )
+        if (
+            self.sampling_wavelengths.ndim != 1
+            or self.sampling_wavelengths.size < 2
+            or not np.all(np.isfinite(self.sampling_wavelengths))
+            or np.any(self.sampling_wavelengths <= 0.0)
+            or np.any(np.diff(self.sampling_wavelengths) <= 0.0)
+        ):
+            raise ValueError(
+                "sampling_wavelengths must be finite, positive, and strictly "
+                "increasing."
+            )
         self.parameters = parameters
+        rv_factor = 1.0 + parameters.rv / (SPEED_OF_LIGHT * 1.0e-3)
+        self.internal_wavelength_bounds = _internal_spectrum_wavelength_bounds(
+            self.observed_wavelengths,
+            (
+                self.sampling_wavelengths
+                if uses_separate_sampling_grid
+                else None
+            ),
+            systemic_rv=parameters.rv,
+        )
+        internal_wavelength_min, internal_wavelength_max = (
+            self.internal_wavelength_bounds
+        )
         self.save_opacity_cache = bool(save_opacity_cache)
         self.molecule_paths = {key: str(value) for key, value in molecule_paths.items()}
         self.cia_paths = {key: str(value) for key, value in cia_paths.items()}
+        cache_wavelengths = (
+            self.internal_wavelength_bounds
+            if uses_separate_sampling_grid
+            else self.observed_wavelengths
+        )
         self.opacity_cache_dir = _opacity_cache_namespace(
             opacity_cache_dir,
-            self.observed_wavelengths,
+            cache_wavelengths,
             nx=nx,
             pressure_top=pressure_top,
             pressure_btm=pressure_btm,
@@ -419,13 +484,23 @@ class Luhman16BPowerLawColumnModel:
         self.jnp = jnp
         self.molinfo = molinfo
         self.nu_grid, self.wav_grid, resolution = wavenumber_grid(
-            np.min(self.observed_wavelengths) - 5.0,
-            np.max(self.observed_wavelengths) + 5.0,
+            internal_wavelength_min,
+            internal_wavelength_max,
             nx,
             unit="AA",
             xsmode="premodit",
         )
         self.observed_nu = jnp.asarray(1.0e8 / self.observed_wavelengths)
+        self.sampling_nu = jnp.asarray(1.0e8 / self.sampling_wavelengths)
+        sampling_query_nu = (1.0e8 / self.sampling_wavelengths) * rv_factor
+        if (
+            np.min(sampling_query_nu) < np.min(self.nu_grid)
+            or np.max(sampling_query_nu) > np.max(self.nu_grid)
+        ):
+            raise ValueError(
+                "sampling_wavelengths and systemic RV extend beyond the "
+                "internal ExoJAX wavelength grid."
+            )
         self.art = ArtEmisPure(
             nu_grid=self.nu_grid,
             pressure_top=pressure_top,
@@ -477,6 +552,7 @@ class Luhman16BPowerLawColumnModel:
                     diffmode=0,
                     auto_trange=[t_low, t_high],
                     dit_grid_resolution=1.0,
+                    allow_32bit=True,
                 )
                 if self.save_opacity_cache:
                     saveopa(opa, str(cache_path), format="zarr", aux={"molmass": molmass})
@@ -555,17 +631,25 @@ class Luhman16BPowerLawColumnModel:
         return dtau
 
     def _cloud_dtau(self, log_p_cloud=None):
+        """Return the gray-cloud optical-depth increment in each layer."""
+
         jnp = self.jnp
         params = self.parameters
         if log_p_cloud is None:
             log_p_cloud = params.log_p_cloud
         log_pressure = jnp.log10(self.art.pressure)
+        log_pressure_boundary = jnp.log10(self.art.pressure_boundary)
+        layer_width = jnp.abs(jnp.diff(log_pressure_boundary))
         norm = params.cloud_column_optical_depth / (
             jnp.sqrt(2.0 * jnp.pi) * params.cloud_width
         )
-        return norm * jnp.exp(
-            -((log_pressure - log_p_cloud) ** 2)
-            / (2.0 * params.cloud_width**2)
+        return (
+            norm
+            * jnp.exp(
+                -((log_pressure - log_p_cloud) ** 2)
+                / (2.0 * params.cloud_width**2)
+            )
+            * layer_width
         )
 
     def evaluate(self, cloudy, log_p_cloud=None):
@@ -583,7 +667,7 @@ class Luhman16BPowerLawColumnModel:
         flux = self.art.run(dtau, temperature)
         flux = flux / jnp.average(flux)
         return ipgauss_sampling(
-            self.observed_nu,
+            self.sampling_nu,
             self.nu_grid,
             flux,
             self.beta_inst,
@@ -705,7 +789,7 @@ class Luhman16BPowerLawColumnModel:
         if normalize:
             flux = flux / jnp.average(flux)
         return ipgauss_sampling(
-            self.observed_nu,
+            self.sampling_nu,
             self.nu_grid,
             flux,
             self.beta_inst,

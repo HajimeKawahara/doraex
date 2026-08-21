@@ -2350,7 +2350,11 @@ def fixed_two_column_median_sample(samples):
     }
     for name, values in samples.items():
         array = np.asarray(values)
-        if array.ndim == 0 or name in skip_names:
+        if (
+            array.ndim == 0
+            or array.size == 0
+            or name in skip_names
+        ):
             continue
         if array.dtype.kind not in "biufc":
             continue

@@ -26,6 +26,7 @@ from doraex.inference.marginal_likelihood import diagonal_noise_variance
 from doraex.operators.design_matrix import (
     linear_profile_operator_from_times,
 )
+from doraex.operators.doppler import doppler_padded_wavelengths
 from doraex.priors.spherical_gp import (
     add_diagonal_jitter,
     squared_exponential_covariance,
@@ -491,6 +492,16 @@ def parse_args():
         action="store_true",
         help="Use all phases and wavelengths instead of the reduced smoke subset.",
     )
+    parser.add_argument(
+        "--mask-zero-flux",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Exclude exactly zero flux samples from the likelihood and reject "
+            "non-finite flux. The full arrays and static validity masks remain "
+            "in the output archive."
+        ),
+    )
     parser.add_argument("--smoke-wavelength-step", type=int, default=128)
     parser.add_argument("--smoke-phase-count", type=int, default=4)
     parser.add_argument("--num-warmup", type=int, default=5)
@@ -904,12 +915,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_chip_data(args):
+def build_chip_data(args, *, return_native_wavelengths=False):
     """Load Luhman 16B chip data for the retrieval."""
 
     chip_data_list = []
+    native_wavelengths = []
     for chip_index in args.chip_indices:
         chip_data = load_luhman16b_chip(args.data_dir, chip_index=chip_index)
+        native_wavelengths.append(np.asarray(chip_data.wavelengths))
         if not args.full_data:
             chip_data = subset_chip_data(
                 chip_data,
@@ -917,7 +930,43 @@ def build_chip_data(args):
                 phase_count=args.smoke_phase_count,
             )
         chip_data_list.append(chip_data)
+    if return_native_wavelengths:
+        return chip_data_list, native_wavelengths
     return chip_data_list
+
+
+def build_observation_masks(chip_data_list, *, mask_zero_flux=False):
+    """Return static per-chip masks for observations used by the likelihood."""
+
+    masks = []
+    for chip_data in chip_data_list:
+        flux = np.asarray(chip_data.flux)
+        if not np.all(np.isfinite(flux)):
+            raise ValueError(
+                f"Non-finite flux values found for chip {chip_data.chip_index}."
+            )
+        if mask_zero_flux:
+            mask = flux != 0.0
+        else:
+            mask = np.ones(flux.shape, dtype=bool)
+        if not np.any(mask):
+            raise ValueError(
+                f"No valid observations remain for chip {chip_data.chip_index}."
+            )
+        masks.append(mask)
+    return masks
+
+
+def build_doppler_profile_wavelengths(wavelengths_by_chip, max_abs_velocity):
+    """Build padded local-profile grids from native chip wavelength grids."""
+
+    return [
+        doppler_padded_wavelengths(
+            wavelengths,
+            max_abs_velocity,
+        )
+        for wavelengths in wavelengths_by_chip
+    ]
 
 
 def _response_function(spectrum_function):
@@ -1083,11 +1132,59 @@ def load_eigen_basis(path, mode_count=None):
     }
 
 
-def build_response_functions(args, chip_data_list, eigen_basis=None):
+def build_response_functions(
+    args,
+    chip_data_list,
+    eigen_basis=None,
+    profile_wavelengths=None,
+):
     """Build on-the-fly ExoJAX spectrum/pressure-response functions."""
 
+    uses_separate_profile_grid = profile_wavelengths is not None
+    if profile_wavelengths is None:
+        profile_wavelengths = [chip.wavelengths for chip in chip_data_list]
+    if len(profile_wavelengths) != len(chip_data_list):
+        raise ValueError(
+            "profile_wavelengths must contain one grid per observed chip."
+        )
+
     response_functions = []
-    for chip_data in chip_data_list:
+    for chip_position, chip_data in enumerate(chip_data_list):
+        profile_grid = profile_wavelengths[chip_position]
+        eigen_profiles = None
+        if eigen_basis is not None and args.frozen_eigen_spectra:
+            key = f"eigenspectra_chip{chip_data.chip_index}"
+            wavelength_key = f"profile_wavelengths_chip{chip_data.chip_index}"
+            if key not in eigen_basis["npz"].files:
+                raise KeyError(f"Missing {key} in eigen basis {eigen_basis['path']}")
+            if wavelength_key not in eigen_basis["npz"].files:
+                if uses_separate_profile_grid:
+                    raise ValueError(
+                        f"Missing {wavelength_key} in eigen basis "
+                        f"{eigen_basis['path']}; regenerate it on a padded grid."
+                    )
+            else:
+                eigen_profile_grid = np.asarray(eigen_basis["npz"][wavelength_key])
+                if not np.array_equal(eigen_profile_grid, np.asarray(profile_grid)):
+                    raise ValueError(
+                        f"{wavelength_key} does not match the requested padded "
+                        "profile grid; regenerate the eigen basis."
+                    )
+            stored_eigen_profiles = np.asarray(eigen_basis["npz"][key])
+            eigen_profiles = (
+                stored_eigen_profiles[:, : eigen_basis["mode_count"]].T
+                if stored_eigen_profiles.ndim == 2
+                else stored_eigen_profiles
+            )
+            expected_shape = (eigen_basis["mode_count"], len(profile_grid))
+            if eigen_profiles.shape != expected_shape:
+                raise ValueError(
+                    f"{key} must have shape {expected_shape} after selecting "
+                    f"eigenmodes, but got {eigen_profiles.shape}."
+                )
+        sampling_kwargs = {}
+        if uses_separate_profile_grid:
+            sampling_kwargs["sampling_wavelengths"] = profile_grid
         model = Luhman16BPowerLawColumnModel(
             chip_data.wavelengths,
             molecule_paths=_molecule_paths(args.database_dir),
@@ -1095,16 +1192,11 @@ def build_response_functions(args, chip_data_list, eigen_basis=None):
             opacity_cache_dir=args.opacity_cache_dir,
             parameters=YAMA_L16B_EXOMOL_ATMOSPHERE,
             nx=args.nx,
+            **sampling_kwargs,
         )
         if eigen_basis is None:
             response_functions.append(_response_function(model.cloudy_at_log_vmrs))
         elif args.frozen_eigen_spectra:
-            key = f"eigenspectra_chip{chip_data.chip_index}"
-            if key not in eigen_basis["npz"].files:
-                raise KeyError(f"Missing {key} in eigen basis {eigen_basis['path']}")
-            eigen_profiles = np.asarray(eigen_basis["npz"][key])[
-                :, : eigen_basis["mode_count"]
-            ].T
             response_functions.append(
                 _frozen_eigen_response_function(
                     model.cloudy_at_log_vmrs,
@@ -1121,6 +1213,27 @@ def build_response_functions(args, chip_data_list, eigen_basis=None):
                 )
             )
     return response_functions
+
+
+def _select_observation_rows(
+    observed,
+    baseline,
+    design_matrix,
+    noise_variance,
+    observation_indices=None,
+):
+    """Apply one static observation-row selection to every likelihood term."""
+
+    observed = jnp.asarray(observed).reshape(-1)
+    if observation_indices is None:
+        return observed, baseline, design_matrix, noise_variance
+    indices = jnp.asarray(observation_indices, dtype=jnp.int32)
+    return (
+        jnp.take(observed, indices, axis=0),
+        jnp.take(baseline, indices, axis=0),
+        jnp.take(design_matrix, indices, axis=0),
+        jnp.take(noise_variance, indices, axis=0),
+    )
 
 
 def on_the_fly_pressure_model(
@@ -1171,11 +1284,19 @@ def on_the_fly_pressure_model(
     pressure_gp_pixel_eigenvectors=None,
     joint_atmosphere_a_sigma_d=False,
     joint_atmosphere_a_sigma_d_rotation=None,
+    profile_wavelengths=None,
+    observation_indices=None,
 ):
     """On-the-fly pressure-perturbation retrieval model."""
 
     n_chip = data.shape[0]
     n_phase = data.shape[1]
+    if profile_wavelengths is None:
+        profile_wavelengths = [None] * n_chip
+    if len(profile_wavelengths) != n_chip:
+        raise ValueError(
+            "profile_wavelengths must contain one grid per observed chip."
+        )
     if joint_atmosphere_a_sigma_d and not gaussianized_atmosphere:
         raise ValueError(
             "Joint atmosphere/A/sigma_d coordinates require a Gaussianized "
@@ -1524,6 +1645,11 @@ def on_the_fly_pressure_model(
         contrast_matrices_by_mode = [[] for _ in range(eigen_mode_count)]
     noise_variances = []
     for chip_index in range(n_chip):
+        profile_operator_kwargs = {}
+        if profile_wavelengths[chip_index] is not None:
+            profile_operator_kwargs["rest_wavelengths"] = profile_wavelengths[
+                chip_index
+            ]
         response_result = response_functions[chip_index](
             t0,
             alpha,
@@ -1549,6 +1675,7 @@ def on_the_fly_pressure_model(
                 base_profile,
                 contrast_profile,
                 weights=jnp.exp(log_w[chip_index]),
+                **profile_operator_kwargs,
             )
             norm = normalization_factor[chip_index] * jnp.mean(baseline)
             baseline = baseline / norm
@@ -1572,6 +1699,7 @@ def on_the_fly_pressure_model(
                     base_profile,
                     eigen_profiles[mode_index],
                     weights=jnp.exp(log_w[chip_index]),
+                    **profile_operator_kwargs,
                 )
                 if baseline is None:
                     baseline = mode_baseline
@@ -1604,6 +1732,13 @@ def on_the_fly_pressure_model(
             axis=1,
         )
     noise_variance = jnp.concatenate(noise_variances, axis=0)
+    observed, baseline, contrast_matrix, noise_variance = _select_observation_rows(
+        data,
+        baseline,
+        contrast_matrix,
+        noise_variance,
+        observation_indices,
+    )
 
     covariance_factor = None
     if eigen_mode_count is None:
@@ -1700,7 +1835,7 @@ def on_the_fly_pressure_model(
             cov_factor=covariance_factor,
             cov_diag=noise_variance,
         ),
-        obs=data.reshape(-1),
+        obs=observed,
     )
 
 
@@ -2392,7 +2527,10 @@ def main():
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    chip_data_list = build_chip_data(args)
+    chip_data_list, native_wavelengths = build_chip_data(
+        args,
+        return_native_wavelengths=True,
+    )
     geometry = build_luhman16b_geometry(nside=args.nside)
     pressure_gp_eigendecomposition = None
     pressure_gp_eigendecomposition_seconds = 0.0
@@ -2416,11 +2554,34 @@ def main():
             f"got {sorted(flux_shapes)}."
         )
     data = jnp.asarray(np.stack([chip.flux for chip in chip_data_list], axis=0))
+    observation_masks = build_observation_masks(
+        chip_data_list,
+        mask_zero_flux=args.mask_zero_flux,
+    )
+    observation_mask = np.concatenate(
+        [mask.reshape(-1) for mask in observation_masks],
+        axis=0,
+    )
+    observation_indices = np.flatnonzero(observation_mask)
+    observation_valid_count = int(observation_indices.size)
+    observation_excluded_count = int(observation_mask.size - observation_valid_count)
+    observation_mask_rule = (
+        "finite_and_nonzero_flux" if args.mask_zero_flux else "all_observations"
+    )
     wavelengths = [jnp.asarray(chip.wavelengths) for chip in chip_data_list]
+    profile_wavelengths = build_doppler_profile_wavelengths(
+        native_wavelengths,
+        abs(args.fixed_v),
+    )
     obs_times = jnp.asarray(chip_data_list[0].obs_times)
 
     setup_start = time.time()
-    response_functions = build_response_functions(args, chip_data_list, eigen_basis=eigen_basis)
+    response_functions = build_response_functions(
+        args,
+        chip_data_list,
+        eigen_basis=eigen_basis,
+        profile_wavelengths=profile_wavelengths,
+    )
     setup_seconds = time.time() - setup_start
 
     preflight_t0 = jnp.asarray(args.init_t0)
@@ -2591,6 +2752,10 @@ def main():
             ),
             joint_atmosphere_a_sigma_d_rotation=(
                 joint_atmosphere_a_sigma_d_rotation
+            ),
+            profile_wavelengths=profile_wavelengths,
+            observation_indices=(
+                observation_indices if args.mask_zero_flux else None
             ),
         )
 
@@ -2855,6 +3020,16 @@ def main():
                 else "on_the_fly_autodiff"
             ),
             "full_data": np.asarray(args.full_data),
+            "mask_zero_flux": np.asarray(args.mask_zero_flux),
+            "observation_mask_rule": np.asarray(observation_mask_rule),
+            "observation_valid_count": np.asarray(observation_valid_count),
+            "observation_excluded_count": np.asarray(
+                observation_excluded_count
+            ),
+            "observation_indices": np.asarray(
+                observation_indices,
+                dtype=np.int64,
+            ),
             "preflight_autodiff": np.asarray(args.preflight_autodiff),
             "dense_mass": np.asarray(args.dense_mass),
             "dense_atmosphere_mass": np.asarray(
@@ -2924,7 +3099,14 @@ def main():
         save_data[f"wavelengths_chip{chip_data.chip_index}"] = np.asarray(
             chip_data.wavelengths
         )
+        save_data[f"profile_wavelengths_chip{chip_data.chip_index}"] = np.asarray(
+            profile_wavelengths[chip_position]
+        )
         save_data[f"flux_chip{chip_data.chip_index}"] = np.asarray(chip_data.flux)
+        save_data[f"observation_mask_chip{chip_data.chip_index}"] = np.asarray(
+            observation_masks[chip_position],
+            dtype=bool,
+        )
         save_data[f"chip_position_{chip_position}"] = np.asarray(chip_data.chip_index)
     if eigen_basis is not None:
         save_data["eigen_parameter_names"] = np.asarray(eigen_basis["parameter_names"])
@@ -2949,6 +3131,17 @@ def main():
         "run_seconds": run_seconds,
         "chip_indices": args.chip_indices,
         "full_data": args.full_data,
+        "mask_zero_flux": args.mask_zero_flux,
+        "observation_mask_rule": observation_mask_rule,
+        "observation_valid_count": observation_valid_count,
+        "observation_excluded_count": observation_excluded_count,
+        "observation_excluded_count_by_chip": {
+            str(chip_data.chip_index): int(
+                observation_masks[chip_position].size
+                - np.count_nonzero(observation_masks[chip_position])
+            )
+            for chip_position, chip_data in enumerate(chip_data_list)
+        },
         "n_chip": len(chip_data_list),
         "n_phase": int(data.shape[1]),
         "n_wavelength": int(data.shape[2]),

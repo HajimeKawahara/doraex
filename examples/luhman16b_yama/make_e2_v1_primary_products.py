@@ -95,6 +95,47 @@ def _load_chip_data(samples: dict[str, np.ndarray], chip_indices: tuple[int, ...
     return chips
 
 
+def _validated_profile_wavelengths(samples, basis, chip_indices):
+    """Return profile grids after checking retrieval/basis provenance."""
+
+    for sample_key, basis_key in (
+        ("eigen_parameter_names", "parameter_names"),
+        ("eigen_parameter_scales", "parameter_scales"),
+        ("eigen_selected_v", "selected_v"),
+    ):
+        if sample_key not in samples or not np.array_equal(
+            np.asarray(samples[sample_key]),
+            np.asarray(basis[basis_key]),
+        ):
+            raise ValueError(
+                "The posterior samples and eigen basis use different eigen "
+                "metadata; rerun the retrieval with this basis."
+            )
+
+    profile_wavelengths = []
+    for chip_index in chip_indices:
+        key = f"profile_wavelengths_chip{chip_index}"
+        if key not in samples:
+            raise ValueError(
+                f"Missing {key} in posterior samples; rerun the retrieval with "
+                "Doppler-padded local profiles."
+            )
+        if key not in basis["npz"].files:
+            raise ValueError(
+                f"Missing {key} in eigen basis; regenerate the basis on the "
+                "Doppler-padded grid."
+            )
+        sample_grid = np.asarray(samples[key])
+        basis_grid = np.asarray(basis["npz"][key])
+        if not np.array_equal(sample_grid, basis_grid):
+            raise ValueError(
+                f"{key} differs between the posterior samples and eigen basis; "
+                "rerun the retrieval with this basis."
+            )
+        profile_wavelengths.append(sample_grid)
+    return profile_wavelengths
+
+
 def _sample_at(samples: dict[str, np.ndarray], index: int) -> dict[str, jnp.ndarray]:
     """Extract one nonlinear posterior sample and fixed metadata."""
 
@@ -110,7 +151,14 @@ def _sample_at(samples: dict[str, np.ndarray], index: int) -> dict[str, jnp.ndar
     return sample
 
 
-def _joint_operator(chips, geometry, response_functions, sample, mode_count: int):
+def _joint_operator(
+    chips,
+    geometry,
+    response_functions,
+    sample,
+    mode_count: int,
+    profile_wavelengths,
+):
     """Return E2 baseline and stacked eigenmode design matrix for one sample."""
 
     inclination = jnp.arccos(sample["cosi"])
@@ -144,6 +192,7 @@ def _joint_operator(chips, geometry, response_functions, sample, mode_count: int
                 base_profile,
                 eigen_profiles[mode],
                 weights=jnp.exp(sample["log_w"][chip_position]),
+                rest_wavelengths=jnp.asarray(profile_wavelengths[chip_position]),
             )
             if baseline is None:
                 norm = sample["A"][chip_position] * jnp.mean(mode_baseline)
@@ -175,10 +224,22 @@ def _prior_covariance(geometry, sample, mode_count: int, gp_jitter: float):
 
 
 def _conditional_for_sample(
-    chips, geometry, response_functions, sample, mode_count, gp_jitter, noise_jitter
+    chips,
+    geometry,
+    response_functions,
+    sample,
+    mode_count,
+    gp_jitter,
+    noise_jitter,
+    profile_wavelengths,
 ):
     baseline, design, noise_variance = _joint_operator(
-        chips, geometry, response_functions, sample, mode_count
+        chips,
+        geometry,
+        response_functions,
+        sample,
+        mode_count,
+        profile_wavelengths,
     )
     data = jnp.concatenate([jnp.asarray(chip.flux).reshape(-1) for chip in chips])
     mean, covariance = conditional_map_posterior(
@@ -263,7 +324,13 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     samples = dict(np.load(args.samples, allow_pickle=False))
-    basis = load_eigen_basis(args.basis)
+    if "eigen_mode_count" not in samples:
+        raise ValueError(
+            "Missing eigen_mode_count in posterior samples; rerun the retrieval "
+            "with the padded eigen basis."
+        )
+    sample_mode_count = int(np.asarray(samples["eigen_mode_count"]))
+    basis = load_eigen_basis(args.basis, mode_count=sample_mode_count)
     mode_count = basis["mode_count"]
     parameter_names = basis["parameter_names"]
     parameter_scales = np.asarray(basis["parameter_scales"], dtype=float)
@@ -271,11 +338,21 @@ def main() -> None:
     chip_indices = tuple(int(v) for v in np.asarray(samples["chip_indices"]))
     nside = int(np.asarray(samples["nside"])) if args.nside is None else args.nside
     chips = _load_chip_data(samples, chip_indices)
+    profile_wavelengths = _validated_profile_wavelengths(
+        samples,
+        basis,
+        chip_indices,
+    )
     geometry = build_luhman16b_geometry(nside=nside)
 
     # build_response_functions honors the frozen eigenspectra stored in the basis.
     args.frozen_eigen_spectra = True
-    response_functions = build_response_functions(args, chips, basis)
+    response_functions = build_response_functions(
+        args,
+        chips,
+        basis,
+        profile_wavelengths=profile_wavelengths,
+    )
     indices = _select_indices(len(np.asarray(samples["T0"])), args.max_map_samples)
     pixel_count = geometry.theta.shape[0]
     mode_means = []
@@ -295,6 +372,7 @@ def main() -> None:
             mode_count,
             args.gp_jitter,
             args.noise_jitter,
+            profile_wavelengths,
         )
         mean_np = np.asarray(mean)
         covariance_np = np.asarray(covariance)
