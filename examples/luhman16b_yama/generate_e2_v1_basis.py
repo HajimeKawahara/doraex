@@ -29,6 +29,7 @@ from generate_e1_v1_basis import (  # noqa: E402
     _basis_center,
     _build_chip_jacobian,
     _load_chip_data_from_samples,
+    _profile_wavelengths_from_samples,
     parse_chips,
     parse_names,
     parse_scales,
@@ -119,6 +120,7 @@ def _build_observation_designs(
     chip_data_list,
     spectra,
     jacobians,
+    profile_wavelengths,
     parameter_scales,
     geometry,
     ell,
@@ -174,6 +176,7 @@ def _build_observation_designs(
                 jnp.asarray(jacobians[chip_position][:, parameter_index])
                 * jnp.asarray(parameter_scales[parameter_index]),
                 weights=jnp.exp(jnp.asarray(log_w_median[sample_chip_position])),
+                rest_wavelengths=jnp.asarray(profile_wavelengths[chip_position]),
             )
             norm = jnp.asarray(a_median[sample_chip_position]) * jnp.mean(baseline)
             whiten = jnp.sqrt(
@@ -223,17 +226,22 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     center = _basis_center(samples)
     chip_data_list = _load_chip_data_from_samples(samples, chip_indices)
+    profile_wavelengths = _profile_wavelengths_from_samples(
+        samples,
+        chip_data_list,
+    )
     geometry = build_luhman16b_geometry(nside=nside)
 
     start = time.time()
     spectra = []
     jacobians = []
-    for chip_data in chip_data_list:
+    for chip_position, chip_data in enumerate(chip_data_list):
         jacobian, spectrum = _build_chip_jacobian(
             args,
             chip_data,
             center,
             parameter_names,
+            profile_wavelengths[chip_position],
         )
         jacobians.append(np.asarray(jacobian))
         spectra.append(np.asarray(spectrum))
@@ -243,6 +251,7 @@ def main():
         chip_data_list,
         spectra,
         jacobians,
+        profile_wavelengths,
         np.asarray(parameter_scales, dtype=float),
         geometry,
         args.ell,
@@ -291,6 +300,9 @@ def main():
     for chip_position, chip_index in enumerate(chip_indices):
         payload[f"spectrum_chip{chip_index}"] = spectra[chip_position]
         payload[f"jacobian_chip{chip_index}"] = jacobians[chip_position]
+        payload[f"profile_wavelengths_chip{chip_index}"] = profile_wavelengths[
+            chip_position
+        ]
         payload[f"eigenspectra_chip{chip_index}"] = (
             jacobians[chip_position] * np.asarray(parameter_scales)[None, :]
         ) @ selected_v

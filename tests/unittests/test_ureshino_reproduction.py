@@ -20,7 +20,11 @@ from doraex.operators.design_matrix import (
     full_design_matrix_from_angles,
     two_column_operator_from_angles,
 )
-from doraex.operators.doppler import doppler_factor
+from doraex.operators.doppler import (
+    doppler_factor,
+    doppler_padded_wavelengths,
+    shifted_profile,
+)
 from doraex.priors.spherical_gp import (
     add_diagonal_jitter,
     project_zero_mean_covariance,
@@ -31,6 +35,83 @@ from doraex.priors.spherical_gp import (
 
 
 jax.config.update("jax_enable_x64", True)
+
+
+def test_padded_rest_grid_covers_both_doppler_boundaries():
+    wavelengths = np.linspace(23038.0, 23160.0, 1024)
+    max_abs_velocity = 31.2
+    rest_wavelengths = doppler_padded_wavelengths(
+        wavelengths,
+        max_abs_velocity,
+    )
+    factors = doppler_factor(jnp.asarray([-max_abs_velocity, max_abs_velocity]))
+    queries = wavelengths[:, None] / np.asarray(factors)
+
+    assert rest_wavelengths[0] < np.min(queries)
+    assert rest_wavelengths[-1] > np.max(queries)
+    assert np.all(np.diff(rest_wavelengths) > 0.0)
+    start = np.flatnonzero(rest_wavelengths == wavelengths[0])[0]
+    np.testing.assert_array_equal(
+        rest_wavelengths[start : start + len(wavelengths)],
+        wavelengths,
+    )
+
+
+def test_shifted_profile_uses_padded_rest_grid_without_endpoint_clamping():
+    wavelengths = jnp.asarray([100.0, 101.0, 102.0])
+    rest_wavelengths = jnp.linspace(98.0, 104.0, 25)
+    rest_profile = 2.0 * rest_wavelengths + 1.0
+    factors = doppler_factor(jnp.asarray([-1000.0, 1000.0]))
+
+    actual = shifted_profile(
+        wavelengths,
+        rest_profile,
+        factors,
+        rest_wavelengths=rest_wavelengths,
+    )
+    expected = 2.0 * wavelengths[:, None] / factors + 1.0
+
+    np.testing.assert_allclose(actual, expected, rtol=1.0e-12, atol=1.0e-12)
+    assert bool(jnp.all(jnp.isfinite(actual)))
+
+
+def test_shifted_profile_marks_insufficient_explicit_rest_grid_nonfinite():
+    wavelengths = jnp.asarray([100.0, 101.0, 102.0])
+    factors = doppler_factor(jnp.asarray([-1000.0, 1000.0]))
+
+    shifted = shifted_profile(
+        wavelengths,
+        wavelengths,
+        factors,
+        rest_wavelengths=wavelengths,
+    )
+
+    assert bool(jnp.isnan(shifted[0, 1]))
+    assert bool(jnp.isnan(shifted[-1, 0]))
+
+
+def test_design_matrix_propagates_the_padded_rest_grid():
+    wavelengths = jnp.asarray([100.0, 101.0, 102.0])
+    rest_wavelengths = jnp.linspace(98.0, 104.0, 25)
+    line_profile = 1.0 - 0.2 * jnp.exp(
+        -0.5 * ((rest_wavelengths - 101.0) / 0.5) ** 2
+    )
+
+    matrix = full_design_matrix_from_angles(
+        jnp.asarray([0.8, 1.4]),
+        jnp.asarray([-0.5, 0.7]),
+        1000.0,
+        jnp.deg2rad(60.0),
+        0.3,
+        0.1,
+        jnp.asarray([0.0, 0.25]),
+        wavelengths,
+        line_profile,
+        rest_wavelengths=rest_wavelengths,
+    )
+
+    assert matrix.shape == (6, 2)
+    assert bool(jnp.all(jnp.isfinite(matrix)))
 
 
 def test_zero_mean_covariance_projection_removes_weighted_monopole():

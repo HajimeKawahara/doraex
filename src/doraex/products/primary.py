@@ -63,6 +63,7 @@ class PrimaryProductConfig:
     run_linearization_check: bool = True
     x64: bool = True
     primary_dir: Path | None = None
+    excluded_product_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,19 +174,25 @@ def primary_product_paths(
     *,
     prefix: str = "m6",
     chip_indices: Sequence[int] = (0, 1, 2, 3),
+    excluded_product_names: Sequence[str] = (),
 ) -> dict[str, Path]:
     """Return the expected primary product paths for a product directory."""
 
     root = Path(product_dir)
     paths = {
         definition.name: root / definition.relative_path.format(prefix=prefix)
-        for definition in primary_product_definitions(chip_indices=chip_indices)
+        for definition in primary_product_definitions(
+            chip_indices=chip_indices,
+            excluded_product_names=excluded_product_names,
+        )
     }
     return paths
 
 
 def primary_product_definitions(
-    *, chip_indices: Sequence[int] = (0, 1, 2, 3)
+    *,
+    chip_indices: Sequence[int] = (0, 1, 2, 3),
+    excluded_product_names: Sequence[str] = (),
 ) -> tuple[PrimaryProductDefinition, ...]:
     """Return the full primary product definition set."""
 
@@ -197,7 +204,15 @@ def primary_product_definitions(
         )
         for chip_index in chip_indices
     )
-    return DEFAULT_PRIMARY_PRODUCT_DEFINITIONS + joint_chip_definitions
+    definitions = DEFAULT_PRIMARY_PRODUCT_DEFINITIONS + joint_chip_definitions
+    excluded = {str(name) for name in excluded_product_names}
+    known_names = {definition.name for definition in definitions}
+    unknown = sorted(excluded - known_names)
+    if unknown:
+        raise ValueError(f"Unknown primary product names: {', '.join(unknown)}")
+    return tuple(
+        definition for definition in definitions if definition.name not in excluded
+    )
 
 
 def generate_primary_products(config: PrimaryProductConfig) -> PrimaryProductResult:
@@ -225,7 +240,10 @@ def generate_primary_products(config: PrimaryProductConfig) -> PrimaryProductRes
         _run_linearization_check(config, env=env)
 
     paths = primary_product_paths(
-        product_dir, prefix=config.prefix, chip_indices=config.chip_indices
+        product_dir,
+        prefix=config.prefix,
+        chip_indices=config.chip_indices,
+        excluded_product_names=config.excluded_product_names,
     )
     missing = tuple(path for path in paths.values() if not path.exists())
     manifest_path = write_primary_product_manifest(
@@ -234,6 +252,7 @@ def generate_primary_products(config: PrimaryProductConfig) -> PrimaryProductRes
         missing=missing,
         prefix=config.prefix,
         samples_path=samples_path,
+        excluded_product_names=config.excluded_product_names,
     )
     bundle_dir = None
     if config.primary_dir is not None:
@@ -243,6 +262,7 @@ def generate_primary_products(config: PrimaryProductConfig) -> PrimaryProductRes
             config.primary_dir,
             prefix=config.prefix,
             chip_indices=config.chip_indices,
+            excluded_product_names=config.excluded_product_names,
         )
     return PrimaryProductResult(
         paths=paths,
@@ -259,6 +279,7 @@ def collect_primary_products(
     *,
     prefix: str = "m6",
     chip_indices: Sequence[int] = (0, 1, 2, 3),
+    excluded_product_names: Sequence[str] = (),
 ) -> Path:
     """Collect primary figures and paper-facing summary values in one directory."""
 
@@ -273,6 +294,7 @@ def collect_primary_products(
         product_dir,
         prefix=prefix,
         chip_indices=chip_indices,
+        excluded_product_names=excluded_product_names,
     )
     missing = [path for path in source_paths.values() if not path.exists()]
     if missing:
@@ -297,6 +319,7 @@ def collect_primary_products(
         info_dir,
         prefix=prefix,
         chip_indices=chip_indices,
+        excluded_product_names=excluded_product_names,
     )
     manifest = {
         "product_set": "primary_bundle",
@@ -307,6 +330,10 @@ def collect_primary_products(
         "figures": figure_entries,
         "info": summary_payload["info_files"],
     }
+    if excluded_product_names:
+        manifest["excluded_products"] = sorted(
+            {str(name) for name in excluded_product_names}
+        )
     manifest_path = primary_dir / "primary_bundle_manifest.json"
     manifest_path.write_text(
         json.dumps(_json_safe(manifest), indent=2) + "\n",
@@ -323,6 +350,7 @@ def write_primary_info_products(
     *,
     prefix: str,
     chip_indices: Sequence[int],
+    excluded_product_names: Sequence[str] = (),
 ) -> dict[str, object]:
     """Write summary tables and JSON values needed alongside primary figures."""
 
@@ -366,7 +394,11 @@ def write_primary_info_products(
         )
     )
 
-    nuisance_payload = _build_nuisance_summary(samples, chip_indices)
+    nuisance_payload = _build_nuisance_summary(
+        samples,
+        chip_indices,
+        diagnostics=diagnostics,
+    )
     info_files.append(_write_json(info_dir / "posterior_nuisance.json", nuisance_payload))
     info_files.append(
         _write_csv(
@@ -375,6 +407,8 @@ def write_primary_info_products(
             fieldnames=[
                 "name",
                 "chip_index",
+                "fixed",
+                "statistic_scope",
                 "n",
                 "median",
                 "q16",
@@ -396,6 +430,8 @@ def write_primary_info_products(
                 fieldnames=[
                     "chip_index",
                     "phase_index",
+                    "fixed",
+                    "statistic_scope",
                     "n",
                     "median",
                     "q16",
@@ -489,13 +525,14 @@ def write_primary_info_products(
         "single_line_comparison": str(
             product_dir / "products" / f"{prefix}_single_line_pressure_response_comparison.json"
         ),
-        "linearization_check_summary": str(
+    }
+    if "linearization_check" not in set(excluded_product_names):
+        source_payload["linearization_check_summary"] = str(
             product_dir
             / "products"
             / "linearization_check"
             / "m7_v1_chip0_linearization_check_summary.json"
-        ),
-    }
+        )
     info_files.append(_write_json(info_dir / "source_paths.json", source_payload))
 
     return {
@@ -515,7 +552,7 @@ def _build_run_summary(
     diagnostics: Mapping[str, object],
     product_summary: Mapping[str, object],
 ) -> dict[str, object]:
-    sampled_parameter_count = _count_sampled_parameters(samples)
+    sampled_parameter_count = _count_sampled_parameters(samples, diagnostics)
     keys = [
         "mode",
         "chip_indices",
@@ -531,6 +568,10 @@ def _build_run_summary(
         "max_tree_depth",
         "dense_mass",
         "fix_nuisance",
+        "fix_a",
+        "fix_log_w",
+        "fix_sigma_d",
+        "fixed_nuisance_sites",
         "fix_logg",
         "zero_mean_log_w",
         "fixed_logg",
@@ -543,6 +584,15 @@ def _build_run_summary(
         "setup_seconds",
     ]
     payload = {key: diagnostics.get(key) for key in keys if key in diagnostics}
+    for key in (
+        "mask_zero_flux",
+        "observation_mask_rule",
+        "observation_valid_count",
+        "observation_excluded_count",
+    ):
+        if key in samples.files:
+            value = np.asarray(samples[key])
+            payload[key] = value.item() if value.ndim == 0 else value.tolist()
     payload["sampled_parameter_count"] = sampled_parameter_count
     payload["samples_recorded"] = int(_sample_count(samples))
     if product_summary:
@@ -581,7 +631,45 @@ def _posterior_summary_rows(
 def _build_nuisance_summary(
     samples: np.lib.npyio.NpzFile,
     chip_indices: Sequence[int],
+    *,
+    diagnostics: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    diagnostics = {} if diagnostics is None else diagnostics
+    files = set(samples.files)
+
+    def metadata(name: str, default=None):
+        if name in diagnostics:
+            return diagnostics[name]
+        if name not in files:
+            return default
+        value = np.asarray(samples[name])
+        return value.item() if value.ndim == 0 else value.tolist()
+
+    fixed_sites = {
+        str(name) for name in (metadata("fixed_nuisance_sites", []) or [])
+    }
+    fix_all = bool(metadata("fix_nuisance", False))
+    fixed_parameters = {
+        name: fix_all
+        or bool(metadata(flag_name, False))
+        or name in fixed_sites
+        for name, flag_name in (
+            ("A", "fix_a"),
+            ("sigma_d", "fix_sigma_d"),
+            ("log_w", "fix_log_w"),
+        )
+    }
+
+    def parameter_stats(values, *, fixed):
+        values = np.asarray(values, dtype=float).reshape(-1)
+        if fixed:
+            values = values[:1]
+        return {
+            "fixed": bool(fixed),
+            "statistic_scope": "fixed_value" if fixed else "posterior_samples",
+            **_posterior_stats(values),
+        }
+
     by_chip = []
     if "A" in samples.files:
         values = np.asarray(samples["A"], dtype=float)
@@ -590,7 +678,10 @@ def _build_nuisance_summary(
                 {
                     "name": "A",
                     "chip_index": int(chip_index),
-                    **_posterior_stats(values[:, position]),
+                    **parameter_stats(
+                        values[:, position],
+                        fixed=fixed_parameters["A"],
+                    ),
                 }
             )
     if "sigma_d" in samples.files:
@@ -600,7 +691,10 @@ def _build_nuisance_summary(
                 {
                     "name": "sigma_d",
                     "chip_index": int(chip_index),
-                    **_posterior_stats(values[:, position]),
+                    **parameter_stats(
+                        values[:, position],
+                        fixed=fixed_parameters["sigma_d"],
+                    ),
                 }
             )
     log_w_by_phase = []
@@ -609,11 +703,23 @@ def _build_nuisance_summary(
         values = np.asarray(samples["log_w"], dtype=float)
         for position, chip_index in enumerate(chip_indices):
             chip_values = values[:, position, :]
+            if fixed_parameters["log_w"]:
+                chip_stats = {
+                    "fixed": True,
+                    "statistic_scope": "fixed_values_across_phase",
+                    **_posterior_stats(chip_values[0]),
+                }
+            else:
+                chip_stats = {
+                    "fixed": False,
+                    "statistic_scope": "posterior_samples_and_phases",
+                    **_posterior_stats(chip_values.reshape(-1)),
+                }
             log_w_by_chip.append(
                 {
                     "name": "log_w",
                     "chip_index": int(chip_index),
-                    **_posterior_stats(chip_values.reshape(-1)),
+                    **chip_stats,
                 }
             )
             for phase_index in range(chip_values.shape[1]):
@@ -621,10 +727,14 @@ def _build_nuisance_summary(
                     {
                         "chip_index": int(chip_index),
                         "phase_index": int(phase_index),
-                        **_posterior_stats(chip_values[:, phase_index]),
+                        **parameter_stats(
+                            chip_values[:, phase_index],
+                            fixed=fixed_parameters["log_w"],
+                        ),
                     }
                 )
     return {
+        "fixed_parameters": fixed_parameters,
         "by_chip": by_chip + log_w_by_chip,
         "log_w_by_phase": log_w_by_phase,
     }
@@ -819,39 +929,93 @@ def _array_stats(values: np.ndarray) -> dict[str, float | int | None]:
     }
 
 
-def _count_sampled_parameters(samples: np.lib.npyio.NpzFile) -> int:
-    sample_site_names = [
-        name
-        for name in samples.files
-        if name.endswith("_raw") or name in {"A", "log_w", "sigma_d"}
-    ]
-    if not sample_site_names:
-        sample_site_names = [
-            name
-            for name in (
-                "T0",
-                "alpha",
-                "logg",
-                "log_vmr_co",
-                "log_vmr_h2o",
-                "log_vmr_ch4",
-                "log_vmr_hf",
-                "log_p_cloud",
-                "sigma_log_p",
-                "A",
-                "log_w",
-                "sigma_d",
-            )
-            if name in samples.files
-        ]
-    count = 0
-    for name in sample_site_names:
+def _count_sampled_parameters(
+    samples: np.lib.npyio.NpzFile,
+    diagnostics: Mapping[str, object] | None = None,
+) -> int:
+    """Count active latent dimensions without counting saved deterministic sites."""
+
+    diagnostics = {} if diagnostics is None else diagnostics
+    files = set(samples.files)
+
+    def metadata(name: str, default=None):
+        if name in diagnostics:
+            return diagnostics[name]
+        if name not in files:
+            return default
+        value = np.asarray(samples[name])
+        return value.item() if value.ndim == 0 else value.tolist()
+
+    def site_size(name: str) -> int:
         values = np.asarray(samples[name])
-        if values.ndim == 0:
+        if values.ndim == 0 or not np.issubdtype(values.dtype, np.number):
+            return 0
+        return int(np.prod(values.shape[1:])) if values.ndim > 1 else 1
+
+    fixed_nuisance_sites = {
+        str(name) for name in (metadata("fixed_nuisance_sites", []) or [])
+    }
+    count = 0
+    joint_site = "atmosphere_a_sigma_d_rotated"
+    joint_coordinates = joint_site in files
+    encoded_atmosphere = False
+    if joint_coordinates:
+        count += site_size(joint_site)
+        encoded_atmosphere = True
+    elif "atmosphere_rotated" in files:
+        count += site_size("atmosphere_rotated")
+        encoded_atmosphere = True
+
+    raw_sites = sorted(name for name in files if name.endswith("_raw"))
+    if raw_sites:
+        count += sum(site_size(name) for name in raw_sites)
+    elif not encoded_atmosphere:
+        physical_sites = [
+            "T0",
+            "alpha",
+            "log_vmr_co",
+            "log_vmr_h2o",
+            "log_vmr_ch4",
+            "log_vmr_hf",
+            "zeta_vmr",
+            "log_p_cloud",
+        ]
+        if not bool(metadata("fix_logg", False)):
+            physical_sites.append("logg")
+        count += sum(site_size(name) for name in physical_sites if name in files)
+
+    direct_sigma_log_p = bool(metadata("direct_sigma_log_p", False)) or (
+        metadata("sigma_log_p_parameterization") == "direct_halfnormal"
+    )
+    sigma_is_fixed = bool(metadata("fix_sigma_log_p", False)) or (
+        metadata("sigma_log_p_parameterization") == "fixed"
+    )
+    sigma_in_raw_sites = "sigma_log_p_raw" in raw_sites
+    if (
+        "sigma_log_p" in files
+        and direct_sigma_log_p
+        and not sigma_is_fixed
+        and not sigma_in_raw_sites
+        and not joint_coordinates
+    ):
+        count += site_size("sigma_log_p")
+
+    fix_all_nuisance = bool(metadata("fix_nuisance", False))
+    nuisance_specs = (
+        ("A", "fix_a"),
+        ("log_w", "fix_log_w"),
+        ("sigma_d", "fix_sigma_d"),
+    )
+    for name, flag_name in nuisance_specs:
+        if name not in files:
             continue
-        if not np.issubdtype(values.dtype, np.number):
+        if joint_coordinates and name in {"A", "sigma_d"}:
             continue
-        count += int(np.prod(values.shape[1:])) if values.ndim > 1 else 1
+        if fix_all_nuisance or bool(metadata(flag_name, False)):
+            continue
+        if name in fixed_nuisance_sites or f"{name}_raw" in raw_sites:
+            continue
+        count += site_size(name)
     return count
 
 
@@ -917,6 +1081,16 @@ def _write_primary_bundle_readme(
     ]
     for item in manifest["figures"]:
         readme.append(f"- `{item['path']}`: {item['name']}")
+    excluded_products = manifest.get("excluded_products", [])
+    if excluded_products:
+        readme.extend(
+            [
+                "",
+                "## Excluded Products",
+                "",
+                *[f"- `{name}`" for name in excluded_products],
+            ]
+        )
     readme.extend(
         [
             "",
@@ -924,8 +1098,10 @@ def _write_primary_bundle_readme(
             "",
             "- `info/run_summary.json`: run configuration and sampler diagnostics.",
             "- `info/posterior_atmosphere.csv`: atmospheric posterior medians and intervals.",
-            "- `info/posterior_nuisance_by_chip.csv`: chip-level nuisance summaries.",
-            "- `info/posterior_log_w_by_phase.csv`: phase-level `log_w` summaries.",
+            "- `info/posterior_nuisance_by_chip.csv`: chip-level nuisance summaries; "
+            "`fixed` and `statistic_scope` distinguish posterior samples from fixed values.",
+            "- `info/posterior_log_w_by_phase.csv`: phase-level `log_w` summaries with "
+            "fixed/free status.",
             "- `info/cloud_map_summary.csv`: cloud-map pixel statistics.",
             "- `info/line_stack_selected_lines.csv`: line-stack wavelength selections.",
             "- `info/single_line_pressure_response_summary.csv`: pure-line diagnostic numbers.",
@@ -992,32 +1168,44 @@ def generate_corner_products(samples_path: Path | str, product_dir: Path | str) 
         raise ValueError(f"No atmospheric corner keys found in {samples_path}")
 
     nuisance_data, nuisance_labels = _nuisance_corner_data(samples)
-    nuisance_figure = corner.corner(
-        nuisance_data,
-        labels=nuisance_labels,
-        bins=36,
-        quantiles=(0.16, 0.5, 0.84),
-        show_titles=True,
-        title_fmt=".3g",
-        title_kwargs={"fontsize": 14},
-        label_kwargs={"fontsize": 14},
-        plot_datapoints=False,
-        fill_contours=True,
-        smooth=1.0,
-        color="tab:green",
-    )
-    nuisance_figure.set_size_inches(12.0, 12.0)
-    for axis in nuisance_figure.axes:
-        axis.tick_params(labelsize=10)
-        axis.xaxis.labelpad = 20
-        axis.yaxis.labelpad = 20
-        if axis.get_xlabel():
-            axis.xaxis.set_label_coords(0.5, -0.55)
-        if axis.get_ylabel():
-            axis.yaxis.set_label_coords(-0.55, 0.5)
-        title = axis.get_title()
-        if "=" in title:
-            axis.set_title(title.rsplit("=", 1)[-1].strip(), fontsize=14)
+    if nuisance_labels:
+        nuisance_figure = corner.corner(
+            nuisance_data,
+            labels=nuisance_labels,
+            bins=36,
+            quantiles=(0.16, 0.5, 0.84),
+            show_titles=True,
+            title_fmt=".3g",
+            title_kwargs={"fontsize": 14},
+            label_kwargs={"fontsize": 14},
+            plot_datapoints=False,
+            fill_contours=True,
+            smooth=1.0,
+            color="tab:green",
+        )
+        nuisance_figure.set_size_inches(12.0, 12.0)
+        for axis in nuisance_figure.axes:
+            axis.tick_params(labelsize=10)
+            axis.xaxis.labelpad = 20
+            axis.yaxis.labelpad = 20
+            if axis.get_xlabel():
+                axis.xaxis.set_label_coords(0.5, -0.55)
+            if axis.get_ylabel():
+                axis.yaxis.set_label_coords(-0.55, 0.5)
+            title = axis.get_title()
+            if "=" in title:
+                axis.set_title(title.rsplit("=", 1)[-1].strip(), fontsize=14)
+    else:
+        nuisance_figure, axis = plt.subplots(figsize=(6.0, 3.0))
+        axis.text(
+            0.5,
+            0.5,
+            "All nuisance parameters are fixed.",
+            ha="center",
+            va="center",
+            fontsize=14,
+        )
+        axis.set_axis_off()
     nuisance_path = product_root / "corner_nuisance.png"
     nuisance_figure.savefig(nuisance_path, dpi=240, bbox_inches="tight")
     plt.close(nuisance_figure)
@@ -1300,6 +1488,7 @@ def write_primary_product_manifest(
     missing: Iterable[Path],
     prefix: str,
     samples_path: Path | str,
+    excluded_product_names: Sequence[str] = (),
 ) -> Path:
     """Write a machine-readable primary product manifest."""
 
@@ -1319,6 +1508,10 @@ def write_primary_product_manifest(
             for name, path in sorted(paths.items())
         ],
     }
+    if excluded_product_names:
+        manifest["excluded_products"] = sorted(
+            {str(name) for name in excluded_product_names}
+        )
     manifest_path = root / "primary_products.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest_path
@@ -1610,19 +1803,35 @@ def _run_linearization_check(config: PrimaryProductConfig, *, env: Mapping[str, 
 def _nuisance_corner_data(samples: np.lib.npyio.NpzFile) -> tuple[np.ndarray, list[str]]:
     arrays = []
     labels = []
+    sample_count = None
     if "A" in samples.files:
         amplitudes = np.asarray(samples["A"])
+        sample_count = amplitudes.shape[0]
         for chip_index in range(amplitudes.shape[1]):
-            arrays.append(amplitudes[:, chip_index])
-            labels.append(rf"$A_{chip_index}$")
+            values = amplitudes[:, chip_index]
+            if _has_dynamic_range(values):
+                arrays.append(values)
+                labels.append(rf"$A_{chip_index}$")
     if "sigma_d" in samples.files:
         sigmas = np.asarray(samples["sigma_d"])
+        sample_count = sigmas.shape[0] if sample_count is None else sample_count
         for chip_index in range(sigmas.shape[1]):
-            arrays.append(sigmas[:, chip_index])
-            labels.append(rf"$\sigma_{{d,{chip_index}}}$")
-    if not arrays:
+            values = sigmas[:, chip_index]
+            if _has_dynamic_range(values):
+                arrays.append(values)
+                labels.append(rf"$\sigma_{{d,{chip_index}}}$")
+    if sample_count is None:
         raise ValueError("No nuisance keys found; expected A and/or sigma_d in samples")
-    return np.column_stack(arrays), labels
+    if not arrays:
+        return np.empty((sample_count, 0), dtype=float), labels
+    data = np.column_stack(arrays)
+    return data[np.all(np.isfinite(data), axis=1)], labels
+
+
+def _has_dynamic_range(values: np.ndarray) -> bool:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    return values.size >= 2 and bool(np.max(values) > np.min(values))
 
 
 def _postprocess_environment(project_root: Path) -> dict[str, str]:
@@ -1658,6 +1867,10 @@ def _run(command: Sequence[str], *, cwd: Path, env: Mapping[str, str]) -> None:
     subprocess.run([str(part) for part in command], cwd=cwd, env=dict(env), check=True)
 
 
+def _parse_product_names(text: str) -> tuple[str, ...]:
+    return tuple(name.strip() for name in text.split(",") if name.strip())
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate the default Doraex primary products for one run."
@@ -1677,6 +1890,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, default=Path("."))
     parser.add_argument("--python-executable", default=sys.executable)
     parser.add_argument("--chip-indices", default="0,1,2,3")
+    parser.add_argument(
+        "--exclude-products",
+        type=_parse_product_names,
+        default=(),
+        help=(
+            "Comma-separated primary product names to omit from required paths, "
+            "the manifest, and an optional collected bundle."
+        ),
+    )
     parser.add_argument("--run-map-products", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--run-line-stack", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
@@ -1713,6 +1935,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         run_linearization_check=args.run_linearization_check and not args.collect_only,
         x64=args.x64,
         primary_dir=args.primary_dir,
+        excluded_product_names=args.exclude_products,
     )
     result = generate_primary_products(config)
     print(f"Wrote primary product manifest: {result.manifest_path}")

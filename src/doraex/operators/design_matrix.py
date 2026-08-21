@@ -25,6 +25,8 @@ def exposure_matrix_from_angles(
     wavelengths,
     line_profile,
     pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
 ):
     """Build the one-exposure Doppler-imaging design matrix.
 
@@ -42,9 +44,11 @@ def exposure_matrix_from_angles(
         u2: Second quadratic limb-darkening coefficient.
         phase: Rotational phase in cycles.
         wavelengths: One-dimensional wavelength grid.
-        line_profile: Rest-frame local line profile sampled on ``wavelengths``.
+        line_profile: Rest-frame local line profile.
         pixel_area: Optional equal-area pixel solid-angle factor. The default
             preserves the original BayesianDI convention used by the tests.
+        rest_wavelengths: Optional wavelength grid on which ``line_profile``
+            is sampled. If omitted, ``wavelengths`` is used.
 
     Returns:
         A matrix with shape ``(n_wavelength, n_pixel)``. Each column is the
@@ -56,7 +60,12 @@ def exposure_matrix_from_angles(
 
     vlos = line_of_sight_velocity(vrot, inclination, theta, phi_rot)
     factors = doppler_factor(vlos)
-    local_profiles = shifted_profile(wavelengths, line_profile, factors)
+    local_profiles = shifted_profile(
+        wavelengths,
+        line_profile,
+        factors,
+        rest_wavelengths=rest_wavelengths,
+    )
 
     mu = projected_mu(theta_obs, phi_obs)
     limb = quadratic_limb_darkening(u1, u2, mu)
@@ -76,6 +85,8 @@ def full_design_matrix_from_angles(
     line_profile,
     weights=None,
     pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
 ):
     """Build the phase-stacked Doppler-imaging design matrix.
 
@@ -88,11 +99,13 @@ def full_design_matrix_from_angles(
         u2: Second quadratic limb-darkening coefficient.
         phases: Rotational phases in cycles.
         wavelengths: One-dimensional wavelength grid.
-        line_profile: Rest-frame local line profile sampled on ``wavelengths``.
+        line_profile: Rest-frame local line profile.
         weights: Optional per-phase multiplicative weights for exposure time,
             normalization, or signal-to-noise weighting. If omitted, all phases
             use unit weight.
         pixel_area: Optional equal-area pixel solid-angle factor.
+        rest_wavelengths: Optional wavelength grid on which ``line_profile``
+            is sampled. If omitted, ``wavelengths`` is used.
 
     Returns:
         The block-stacked matrix ``W`` from Ureshino et al. Eq. (13)-(14), with
@@ -114,6 +127,7 @@ def full_design_matrix_from_angles(
             wavelengths,
             line_profile,
             pixel_area=pixel_area,
+            rest_wavelengths=rest_wavelengths,
         )
         return weight * matrix
 
@@ -135,6 +149,8 @@ def full_design_matrix_from_times(
     weights=None,
     t0=0.0,
     pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
 ):
     """Build the phase-stacked design matrix from observation times.
 
@@ -149,10 +165,12 @@ def full_design_matrix_from_times(
             ``t0``.
         period: Rotation period in the same units as ``obs_times``.
         wavelengths: One-dimensional wavelength grid.
-        line_profile: Rest-frame local line profile sampled on ``wavelengths``.
+        line_profile: Rest-frame local line profile.
         weights: Optional per-exposure multiplicative weights.
         t0: Reference epoch used to convert times to phases.
         pixel_area: Optional equal-area pixel solid-angle factor.
+        rest_wavelengths: Optional wavelength grid on which ``line_profile``
+            is sampled. If omitted, ``wavelengths`` is used.
 
     Returns:
         The block-stacked matrix ``W`` with shape
@@ -171,6 +189,7 @@ def full_design_matrix_from_times(
         line_profile,
         weights=weights,
         pixel_area=pixel_area,
+        rest_wavelengths=rest_wavelengths,
     )
 
 
@@ -188,6 +207,8 @@ def two_column_operator_from_angles(
     mean_cloud_fraction,
     weights=None,
     pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
 ):
     """Build the two-column Doppler-retrieval linear operator.
 
@@ -207,12 +228,14 @@ def two_column_operator_from_angles(
         phases: Rotational phases in cycles.
         wavelengths: One-dimensional wavelength grid.
         clear_profile: Rest-frame local spectrum for the clear atmospheric
-            column, sampled on ``wavelengths``.
+            column.
         cloudy_profile: Rest-frame local spectrum for the cloudy atmospheric
-            column, sampled on ``wavelengths``.
+            column.
         mean_cloud_fraction: Uniform baseline cloudy-column fraction ``f0``.
         weights: Optional per-phase multiplicative weights.
         pixel_area: Optional equal-area pixel solid-angle factor.
+        rest_wavelengths: Optional wavelength grid on which both local spectra
+            are sampled. If omitted, ``wavelengths`` is used.
 
     Returns:
         A tuple ``(m0, W_delta)``. ``m0`` is the flattened spectrum from the
@@ -236,6 +259,7 @@ def two_column_operator_from_angles(
         delta_profile,
         weights=weights,
         pixel_area=pixel_area,
+        rest_wavelengths=rest_wavelengths,
     )
 
 
@@ -252,6 +276,8 @@ def linear_profile_operator_from_angles(
     contrast_profile,
     weights=None,
     pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
 ):
     """Build a Doppler-retrieval operator for a linear local spectrum.
 
@@ -270,11 +296,13 @@ def linear_profile_operator_from_angles(
         phases: Rotational phases in cycles.
         wavelengths: One-dimensional wavelength grid.
         base_profile: Rest-frame local spectrum for the uniform baseline
-            atmosphere, sampled on ``wavelengths``.
+            atmosphere.
         contrast_profile: Rest-frame local spectral response to a unit map
-            perturbation, sampled on ``wavelengths``.
+            perturbation.
         weights: Optional per-phase multiplicative weights.
         pixel_area: Optional equal-area pixel solid-angle factor.
+        rest_wavelengths: Optional wavelength grid on which both local spectra
+            are sampled. If omitted, ``wavelengths`` is used.
 
     Returns:
         A tuple ``(m0, W_delta)`` for the flattened baseline spectrum and the
@@ -293,6 +321,7 @@ def linear_profile_operator_from_angles(
         base_profile,
         weights=weights,
         pixel_area=pixel_area,
+        rest_wavelengths=rest_wavelengths,
     )
     contrast_matrix = full_design_matrix_from_angles(
         theta,
@@ -306,6 +335,7 @@ def linear_profile_operator_from_angles(
         contrast_profile,
         weights=weights,
         pixel_area=pixel_area,
+        rest_wavelengths=rest_wavelengths,
     )
     uniform_map = jnp.ones(base_matrix.shape[1])
     return base_matrix @ uniform_map, contrast_matrix
@@ -327,6 +357,8 @@ def two_column_operator_from_times(
     weights=None,
     t0=0.0,
     pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
 ):
     """Build the two-column Doppler-retrieval operator from times.
 
@@ -342,13 +374,15 @@ def two_column_operator_from_times(
         period: Rotation period in the same units as ``obs_times``.
         wavelengths: One-dimensional wavelength grid.
         clear_profile: Rest-frame local spectrum for the clear atmospheric
-            column, sampled on ``wavelengths``.
+            column.
         cloudy_profile: Rest-frame local spectrum for the cloudy atmospheric
-            column, sampled on ``wavelengths``.
+            column.
         mean_cloud_fraction: Uniform baseline cloudy-column fraction.
         weights: Optional per-exposure multiplicative weights.
         t0: Reference epoch used to convert times to phases.
         pixel_area: Optional equal-area pixel solid-angle factor.
+        rest_wavelengths: Optional wavelength grid on which both local spectra
+            are sampled. If omitted, ``wavelengths`` is used.
 
     Returns:
         A tuple ``(m0, W_delta)`` for the flattened baseline spectrum and the
@@ -369,6 +403,7 @@ def two_column_operator_from_times(
         mean_cloud_fraction,
         weights=weights,
         pixel_area=pixel_area,
+        rest_wavelengths=rest_wavelengths,
     )
 
 
@@ -387,6 +422,8 @@ def linear_profile_operator_from_times(
     weights=None,
     t0=0.0,
     pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
 ):
     """Build a linear-profile Doppler operator from observation times."""
 
@@ -404,4 +441,5 @@ def linear_profile_operator_from_times(
         contrast_profile,
         weights=weights,
         pixel_area=pixel_area,
+        rest_wavelengths=rest_wavelengths,
     )
