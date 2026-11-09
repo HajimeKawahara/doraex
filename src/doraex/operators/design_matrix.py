@@ -11,7 +11,11 @@ from doraex.geometry.rotation import (
     rotate_longitude,
     visible_mask,
 )
-from doraex.operators.doppler import doppler_factor, shifted_profile
+from doraex.operators.doppler import (
+    doppler_factor,
+    shifted_pixel_profiles,
+    shifted_profile,
+)
 
 
 def exposure_matrix_from_angles(
@@ -187,6 +191,247 @@ def full_design_matrix_from_times(
         phases,
         wavelengths,
         line_profile,
+        weights=weights,
+        pixel_area=pixel_area,
+        rest_wavelengths=rest_wavelengths,
+    )
+
+
+def integrate_pixel_profiles_from_angles(
+    theta,
+    phi,
+    vrot,
+    inclination,
+    u1,
+    u2,
+    phases,
+    wavelengths,
+    pixel_profiles,
+    weights=None,
+    pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
+):
+    """Integrate one rest-frame spectrum per pixel over rotation phases.
+
+    Unlike the linear design-matrix builders, this operator accepts a distinct
+    local spectrum for every surface pixel. It is therefore suitable for an
+    exact nonlinear atmospheric map whose local radiative-transfer result
+    cannot be represented by one shared profile and a linear contrast.
+
+    Args:
+        theta: Pixel colatitudes in the co-rotating frame, in radians.
+        phi: Pixel longitudes in the co-rotating frame, in radians.
+        vrot: Equatorial rotation velocity, in km/s.
+        inclination: Spin inclination angle in radians.
+        u1: First quadratic limb-darkening coefficient.
+        u2: Second quadratic limb-darkening coefficient.
+        phases: Rotational phases in cycles.
+        wavelengths: One-dimensional observed wavelength grid.
+        pixel_profiles: Local rest-frame spectra with shape
+            ``(n_pixel, n_rest_wavelength)``.
+        weights: Optional per-phase multiplicative weights.
+        pixel_area: Optional equal-area pixel solid-angle factor.
+        rest_wavelengths: Common wavelength grid for ``pixel_profiles``. If
+            omitted, ``wavelengths`` is used.
+
+    Returns:
+        Disk-integrated spectra with shape
+        ``(n_phase, n_wavelength)``.
+    """
+
+    phases = jnp.asarray(phases)
+    if weights is None:
+        weights = jnp.ones_like(phases)
+    else:
+        weights = jnp.asarray(weights)
+
+    def integrate_one(phase, phase_weight):
+        phi_rot = rotate_longitude(phi, phase)
+        theta_obs, phi_obs = incline(
+            theta,
+            phi_rot,
+            jnp.pi / 2.0 - inclination,
+        )
+        vlos = line_of_sight_velocity(vrot, inclination, theta, phi_rot)
+        local_profiles = shifted_pixel_profiles(
+            wavelengths,
+            pixel_profiles,
+            doppler_factor(vlos),
+            rest_wavelengths=rest_wavelengths,
+        )
+        mu = projected_mu(theta_obs, phi_obs)
+        limb = quadratic_limb_darkening(u1, u2, mu)
+        pixel_weight = visible_mask(phi_obs) * mu * limb * pixel_area
+        return phase_weight * jnp.sum(
+            local_profiles * pixel_weight[None, :],
+            axis=1,
+        )
+
+    return jax.vmap(integrate_one)(phases, weights)
+
+
+def integrate_pixel_profiles_from_times(
+    theta,
+    phi,
+    vrot,
+    inclination,
+    u1,
+    u2,
+    obs_times,
+    period,
+    wavelengths,
+    pixel_profiles,
+    weights=None,
+    t0=0.0,
+    pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
+):
+    """Integrate per-pixel spectra from observation times."""
+
+    phases = (jnp.asarray(obs_times) - t0) / period
+    return integrate_pixel_profiles_from_angles(
+        theta,
+        phi,
+        vrot,
+        inclination,
+        u1,
+        u2,
+        phases,
+        wavelengths,
+        pixel_profiles,
+        weights=weights,
+        pixel_area=pixel_area,
+        rest_wavelengths=rest_wavelengths,
+    )
+
+
+def local_pixel_pressure_operator_from_angles(
+    theta,
+    phi,
+    vrot,
+    inclination,
+    u1,
+    u2,
+    phases,
+    wavelengths,
+    pixel_profiles,
+    pixel_pressure_derivatives,
+    weights=None,
+    pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
+):
+    """Linearize exact per-pixel spectra with respect to pixel pressures.
+
+    ``pixel_profiles`` and ``pixel_pressure_derivatives`` are evaluated at one
+    pressure per pixel. The returned Jacobian maps an additive perturbation in
+    each pixel's log pressure to the corresponding first-order perturbation of
+    the disk-integrated spectrum.
+
+    Args:
+        theta: Pixel colatitudes in the co-rotating frame, in radians.
+        phi: Pixel longitudes in the co-rotating frame, in radians.
+        vrot: Equatorial rotation velocity, in km/s.
+        inclination: Spin inclination angle in radians.
+        u1: First quadratic limb-darkening coefficient.
+        u2: Second quadratic limb-darkening coefficient.
+        phases: Rotational phases in cycles.
+        wavelengths: One-dimensional observed wavelength grid.
+        pixel_profiles: Local spectra with shape
+            ``(n_pixel, n_rest_wavelength)``.
+        pixel_pressure_derivatives: Derivatives of ``pixel_profiles`` with
+            respect to each pixel's scalar log pressure, with the same shape.
+        weights: Optional per-phase multiplicative weights.
+        pixel_area: Optional equal-area pixel solid-angle factor.
+        rest_wavelengths: Common rest wavelength grid. If omitted,
+            ``wavelengths`` is used.
+
+    Returns:
+        A tuple ``(baseline, jacobian)``. ``baseline`` has shape
+        ``(n_phase * n_wavelength,)`` and ``jacobian`` has shape
+        ``(n_phase * n_wavelength, n_pixel)``.
+    """
+
+    phases = jnp.asarray(phases)
+    if weights is None:
+        weights = jnp.ones_like(phases)
+    else:
+        weights = jnp.asarray(weights)
+
+    def linearize_one(phase, phase_weight):
+        phi_rot = rotate_longitude(phi, phase)
+        theta_obs, phi_obs = incline(
+            theta,
+            phi_rot,
+            jnp.pi / 2.0 - inclination,
+        )
+        vlos = line_of_sight_velocity(vrot, inclination, theta, phi_rot)
+        factors = doppler_factor(vlos)
+        local_profiles = shifted_pixel_profiles(
+            wavelengths,
+            pixel_profiles,
+            factors,
+            rest_wavelengths=rest_wavelengths,
+        )
+        local_derivatives = shifted_pixel_profiles(
+            wavelengths,
+            pixel_pressure_derivatives,
+            factors,
+            rest_wavelengths=rest_wavelengths,
+        )
+        mu = projected_mu(theta_obs, phi_obs)
+        limb = quadratic_limb_darkening(u1, u2, mu)
+        pixel_weight = (
+            phase_weight
+            * visible_mask(phi_obs)
+            * mu
+            * limb
+            * pixel_area
+        )
+        jacobian = local_derivatives * pixel_weight[None, :]
+        baseline = jnp.sum(local_profiles * pixel_weight[None, :], axis=1)
+        return baseline, jacobian
+
+    baseline, jacobian = jax.vmap(linearize_one)(phases, weights)
+    return baseline.reshape(-1), jacobian.reshape(
+        (-1, pixel_profiles.shape[0])
+    )
+
+
+def local_pixel_pressure_operator_from_times(
+    theta,
+    phi,
+    vrot,
+    inclination,
+    u1,
+    u2,
+    obs_times,
+    period,
+    wavelengths,
+    pixel_profiles,
+    pixel_pressure_derivatives,
+    weights=None,
+    t0=0.0,
+    pixel_area=1.0,
+    *,
+    rest_wavelengths=None,
+):
+    """Linearize exact per-pixel spectra from observation times."""
+
+    phases = (jnp.asarray(obs_times) - t0) / period
+    return local_pixel_pressure_operator_from_angles(
+        theta,
+        phi,
+        vrot,
+        inclination,
+        u1,
+        u2,
+        phases,
+        wavelengths,
+        pixel_profiles,
+        pixel_pressure_derivatives,
         weights=weights,
         pixel_area=pixel_area,
         rest_wavelengths=rest_wavelengths,

@@ -68,6 +68,7 @@ def test_collect_primary_products_ignores_excluded_products(tmp_path, monkeypatc
     assert "## Excluded Products" in readme
     assert "`linearization_check`" in readme
     assert "`fixed` and `statistic_scope`" in readme
+    assert "single_line_pressure_response_summary.csv" not in readme
 
 
 def test_nuisance_corner_data_omits_fixed_columns(tmp_path):
@@ -246,3 +247,30 @@ def test_count_sampled_parameters_counts_raw_nuisance_with_encoded_atmosphere(
         count = primary._count_sampled_parameters(samples)
 
     assert count == 7 + 4 * 14
+
+
+@pytest.mark.parametrize("marginalized_a, expected", [(False, 783), (True, 779)])
+def test_count_sampled_parameters_includes_exact_pressure_map_latent(
+    tmp_path, marginalized_a, expected
+):
+    path = tmp_path / "samples.npz"
+    sample_count = 16
+    np.savez(
+        path,
+        atmosphere_rotated=np.zeros((sample_count, 7)),
+        sigma_log_p=np.ones(sample_count),
+        A=np.ones((sample_count, 4)),
+        sigma_d=np.ones((sample_count, 4)),
+        pressure_map_latent=np.zeros((sample_count, 767)),
+        direct_sigma_log_p=np.asarray(not marginalized_a),
+        sigma_log_p_parameterization=np.asarray(
+            "log_halfnormal" if marginalized_a else "direct_halfnormal"
+        ),
+        fix_log_w=np.asarray(True),
+        marginalized_A=np.asarray(marginalized_a),
+    )
+
+    with np.load(path, allow_pickle=False) as samples:
+        count = primary._count_sampled_parameters(samples)
+
+    assert count == expected

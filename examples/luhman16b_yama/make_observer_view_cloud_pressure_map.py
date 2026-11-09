@@ -26,6 +26,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cosi", type=float, default=0.485)
     parser.add_argument("--grid-size", type=int, default=600)
     parser.add_argument("--dpi", type=int, default=240)
+    parser.add_argument(
+        "--pressure-max", type=float, default=None,
+        help="Upper color-scale limit in bar; data remain unchanged.",
+    )
     return parser.parse_args()
 
 
@@ -67,7 +71,12 @@ def main() -> None:
         np.load(args.product_dir / "p_cloud_mean_joint_by_chip.npy")[0], dtype=float
     )
     inclination = np.arccos(args.cosi)
-    norm = Normalize(vmin=float(np.nanmin(values)), vmax=float(np.nanmax(values)))
+    pressure_max = float(np.nanmax(values)) if args.pressure_max is None else args.pressure_max
+    if args.pressure_max is not None and (
+        not np.isfinite(pressure_max) or pressure_max <= float(np.nanmin(values))
+    ):
+        raise ValueError("--pressure-max must be finite and exceed the minimum pressure.")
+    norm = Normalize(vmin=float(np.nanmin(values)), vmax=pressure_max)
     equator_x, equator_y = projected_equator(inclination)
 
     fig, axes = plt.subplots(2, 2, figsize=(3.45, 3.75), constrained_layout=True)
@@ -89,7 +98,10 @@ def main() -> None:
         axis.set_axis_off()
         axis.set_title(rf"$\varphi={phase:.2f}$", fontsize=12, pad=2)
 
-    colorbar = fig.colorbar(image, ax=axes, orientation="horizontal", fraction=0.075, pad=0.035)
+    colorbar = fig.colorbar(
+        image, ax=axes, orientation="horizontal", fraction=0.075, pad=0.035,
+        extend="max" if np.nanmax(values) > pressure_max else "neither",
+    )
     colorbar.set_label("Cloud pressure [bar]", fontsize=12, labelpad=2)
     colorbar.ax.tick_params(labelsize=11)
     colorbar.ax.invert_xaxis()

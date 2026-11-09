@@ -24,6 +24,7 @@ from doraex.geometry.healpix import angular_distance_matrix, healpix_pixel_angle
 from doraex.geometry.limb_darkening import kipping_q_to_u
 from doraex.inference.marginal_likelihood import diagonal_noise_variance
 from doraex.operators.design_matrix import (
+    integrate_pixel_profiles_from_times,
     linear_profile_operator_from_times,
 )
 from doraex.operators.doppler import doppler_padded_wavelengths
@@ -39,6 +40,7 @@ from doraex.spectra.exojax_forward import (
 )
 
 ROOT = Path(__file__).resolve().parents[3]
+EXACT_RT_DISK_NORMALIZATION = "A_chip_times_global_mean_uniform_disk_spectrum"
 
 
 @dataclass(frozen=True)
@@ -1132,6 +1134,73 @@ def load_eigen_basis(path, mode_count=None):
     }
 
 
+def pressure_map_from_whitened_latent(
+    latent,
+    sigma_log_p,
+    eigenvalues,
+    pixel_eigenvectors,
+    jitter,
+):
+    """Transform whitened reduced GP coordinates into a zero-mean map."""
+
+    scales = jnp.sqrt(sigma_log_p**2 * eigenvalues + jitter)
+    return pixel_eigenvectors @ (scales * latent)
+
+
+def whitened_latent_from_pressure_map(
+    delta_log_p,
+    sigma_log_p,
+    eigenvalues,
+    pixel_eigenvectors,
+    jitter,
+):
+    """Project a zero-mean pressure map into the reduced whitened basis."""
+
+    scales = jnp.sqrt(sigma_log_p**2 * eigenvalues + jitter)
+    return (pixel_eigenvectors.T @ delta_log_p) / scales
+
+
+def _exact_response_function(spectrum_function, rt_pixel_batch_size):
+    """Return a function that evaluates exact spectra for pixel pressures."""
+
+    def response(
+        t0,
+        alpha,
+        log_vmr_co,
+        log_vmr_h2o,
+        log_vmr_ch4,
+        log_vmr_hf,
+        logg,
+        log_p_cloud,
+    ):
+        return spectrum_function(
+            t0,
+            alpha,
+            log_vmr_co,
+            log_vmr_h2o,
+            log_vmr_ch4,
+            log_vmr_hf,
+            log_p_cloud,
+            logg=logg,
+            rt_batch_size=rt_pixel_batch_size,
+        )
+
+    return response
+
+
+def _validate_exact_rt_local_normalization(exact_pixel_rt, local_normalization):
+    """Validate the local-spectrum normalization used by exact pixel RT."""
+
+    if local_normalization not in ("per_pixel_mean", "none"):
+        raise ValueError(
+            "exact_rt_local_normalization must be 'per_pixel_mean' or 'none'."
+        )
+    if not exact_pixel_rt and local_normalization != "per_pixel_mean":
+        raise ValueError(
+            "--exact-rt-local-normalization=none requires --exact-pixel-rt."
+        )
+
+
 def build_response_functions(
     args,
     chip_data_list,
@@ -1140,6 +1209,16 @@ def build_response_functions(
 ):
     """Build on-the-fly ExoJAX spectrum/pressure-response functions."""
 
+    exact_pixel_rt = getattr(args, "exact_pixel_rt", False)
+    exact_rt_local_normalization = getattr(
+        args,
+        "exact_rt_local_normalization",
+        "per_pixel_mean",
+    )
+    _validate_exact_rt_local_normalization(
+        exact_pixel_rt,
+        exact_rt_local_normalization,
+    )
     uses_separate_profile_grid = profile_wavelengths is not None
     if profile_wavelengths is None:
         profile_wavelengths = [chip.wavelengths for chip in chip_data_list]
@@ -1192,10 +1271,30 @@ def build_response_functions(
             opacity_cache_dir=args.opacity_cache_dir,
             parameters=YAMA_L16B_EXOMOL_ATMOSPHERE,
             nx=args.nx,
+            opacity_mode=getattr(args, "opacity_mode", "premodit"),
+            diffgrid_temperature_nodes=getattr(
+                args,
+                "diffgrid_temperature_nodes",
+                21,
+            ),
             **sampling_kwargs,
         )
         if eigen_basis is None:
-            response_functions.append(_response_function(model.cloudy_at_log_vmrs))
+            if exact_pixel_rt:
+                if exact_rt_local_normalization == "per_pixel_mean":
+                    spectrum_function = model.cloudy_map_at_log_vmrs
+                else:
+                    spectrum_function = model.cloudy_raw_map_at_log_vmrs
+                response_functions.append(
+                    _exact_response_function(
+                        spectrum_function,
+                        args.rt_pixel_batch_size,
+                    )
+                )
+            else:
+                response_functions.append(
+                    _response_function(model.cloudy_at_log_vmrs)
+                )
         elif args.frozen_eigen_spectra:
             response_functions.append(
                 _frozen_eigen_response_function(
@@ -1286,6 +1385,7 @@ def on_the_fly_pressure_model(
     joint_atmosphere_a_sigma_d_rotation=None,
     profile_wavelengths=None,
     observation_indices=None,
+    exact_pixel_rt=False,
 ):
     """On-the-fly pressure-perturbation retrieval model."""
 
@@ -1297,6 +1397,36 @@ def on_the_fly_pressure_model(
         raise ValueError(
             "profile_wavelengths must contain one grid per observed chip."
         )
+    if exact_pixel_rt:
+        if eigen_mode_count is not None:
+            raise ValueError("Exact pixel RT cannot use an eigen-response basis.")
+        if not zero_mean_pressure_map:
+            raise ValueError("Exact pixel RT requires a zero-mean pressure map.")
+        if (
+            pressure_gp_eigenvalues is None
+            or pressure_gp_pixel_eigenvectors is None
+        ):
+            raise ValueError(
+                "Exact pixel RT requires the fixed pressure-GP eigendecomposition."
+            )
+        pressure_gp_eigenvalues = jnp.asarray(pressure_gp_eigenvalues)
+        pressure_gp_pixel_eigenvectors = jnp.asarray(
+            pressure_gp_pixel_eigenvectors
+        )
+        expected_rank = theta.shape[0] - 1
+        if pressure_gp_eigenvalues.shape != (expected_rank,):
+            raise ValueError(
+                "Exact pixel RT pressure-GP eigenvalues must have shape "
+                f"({expected_rank},)."
+            )
+        if pressure_gp_pixel_eigenvectors.shape != (
+            theta.shape[0],
+            expected_rank,
+        ):
+            raise ValueError(
+                "Exact pixel RT pressure-GP eigenvectors must have shape "
+                f"({theta.shape[0]}, {expected_rank})."
+            )
     if joint_atmosphere_a_sigma_d and not gaussianized_atmosphere:
         raise ValueError(
             "Joint atmosphere/A/sigma_d coordinates require a Gaussianized "
@@ -1635,6 +1765,110 @@ def on_the_fly_pressure_model(
                 SIGMA_D_LOGNORMAL_SCALE,
             ).expand([n_chip]),
         )
+
+    if exact_pixel_rt:
+        pressure_map_latent = numpyro.sample(
+            "pressure_map_latent",
+            dist.Normal(0.0, 1.0)
+            .expand([pressure_gp_eigenvalues.shape[0]])
+            .to_event(1),
+        )
+        delta_log_p = numpyro.deterministic(
+            "delta_log_p",
+            pressure_map_from_whitened_latent(
+                pressure_map_latent,
+                sigma_log_p,
+                pressure_gp_eigenvalues,
+                pressure_gp_pixel_eigenvectors,
+                jnp.asarray(gp_jitter),
+            ),
+        )
+        log_p_cloud_map = numpyro.deterministic(
+            "log_p_cloud_map",
+            log_p_cloud + delta_log_p,
+        )
+        numpyro.deterministic("sigma_b", sigma_log_p)
+        numpyro.deterministic("ell_b", jnp.asarray(fixed_ell_b))
+
+        baselines = []
+        noise_variances = []
+        profile_pressures = jnp.concatenate(
+            (jnp.atleast_1d(log_p_cloud), log_p_cloud_map)
+        )
+        for chip_index in range(n_chip):
+            profiles = response_functions[chip_index](
+                t0,
+                alpha,
+                log_vmrs["log_vmr_co"],
+                log_vmrs["log_vmr_h2o"],
+                log_vmrs["log_vmr_ch4"],
+                log_vmrs["log_vmr_hf"],
+                logg,
+                profile_pressures,
+            )
+            pixel_profiles = profiles[1:]
+            integration_kwargs = {}
+            if profile_wavelengths[chip_index] is not None:
+                integration_kwargs["rest_wavelengths"] = (
+                    profile_wavelengths[chip_index]
+                )
+            raw_exact = integrate_pixel_profiles_from_times(
+                theta,
+                phi,
+                vrot,
+                inclination,
+                u1,
+                u2,
+                obs_times,
+                period,
+                wavelengths[chip_index],
+                pixel_profiles,
+                weights=jnp.exp(log_w[chip_index]),
+                **integration_kwargs,
+            )
+            uniform_profiles = jnp.broadcast_to(
+                profiles[0],
+                pixel_profiles.shape,
+            )
+            raw_uniform = integrate_pixel_profiles_from_times(
+                theta,
+                phi,
+                vrot,
+                inclination,
+                u1,
+                u2,
+                obs_times,
+                period,
+                wavelengths[chip_index],
+                uniform_profiles,
+                weights=jnp.exp(log_w[chip_index]),
+                **integration_kwargs,
+            )
+            norm = normalization_factor[chip_index] * jnp.mean(raw_uniform)
+            baseline = (raw_exact / norm).reshape(-1)
+            baselines.append(baseline)
+            noise_variances.append(
+                diagonal_noise_variance(
+                    baseline.shape[0],
+                    sigma_d[chip_index],
+                    jitter=noise_jitter,
+                )
+            )
+
+        baseline = jnp.concatenate(baselines, axis=0)
+        noise_variance = jnp.concatenate(noise_variances, axis=0)
+        observed = jnp.asarray(data).reshape(-1)
+        if observation_indices is not None:
+            indices = jnp.asarray(observation_indices, dtype=jnp.int32)
+            observed = jnp.take(observed, indices, axis=0)
+            baseline = jnp.take(baseline, indices, axis=0)
+            noise_variance = jnp.take(noise_variance, indices, axis=0)
+        numpyro.sample(
+            "obs",
+            dist.Normal(baseline, jnp.sqrt(noise_variance)).to_event(1),
+            obs=observed,
+        )
+        return
 
     baselines = []
     if eigen_mode_count is None:
