@@ -1,6 +1,89 @@
-# Luhman 16B Milestone 1
+# Luhman 16B Doppler Retrieval
 
 This directory contains the target-specific production entry points for reproducing the Ureshino et al. Luhman 16B Bayesian Doppler-imaging analysis with Doraex core APIs.
+
+## M9 v3: Exact Pressure-Map Retrieval
+
+`m9_v3_run.py` evaluates a distinct radiative-transfer spectrum for each surface
+pixel, integrates the raw intensities over the rotating disk, and applies the
+uniform-reference disk normalization. The production configuration marginalizes
+the four chip normalization factors under their bounded Uniform priors and
+restores continuous conditional draws after sampling. NUTS samples the 767
+zero-mean GP map coordinates, seven atmosphere parameters, GP amplitude, and
+four noise scales. Linear conditional maps are initialization candidates only;
+the sampled likelihood remains nonlinear.
+
+Install the example and map dependencies with `pip install '.[maps,examples]'`.
+Use an ExoJAX Git checkout containing the DiffGrid real-space teacher and the
+fix for ExoJAX #794. The implementation was developed against commit
+`37e13c7f28a9d348e19cc3f1e6b38534ed1e4440`. The imported checkout is recorded and
+must match the forward-validation report. The opacity interpolation uses
+monotone temperature slopes; it does not enable wavenumber C1 interpolation.
+Molecular databases, observation archives, initialization states, opacity
+caches, validation reports, and retrieval results are local inputs or outputs.
+
+Set `PYTHONPATH` to the ExoJAX checkout's `src` directory and this repository's
+`src` directory before running the Python entry points. The molecular database
+defaults to `~/data_mol/.database` and can be changed with `--database-dir`.
+
+1. Prepare coherent states with `m9_v3_prepare_seeds.py --samples <M8 archive>
+   --maps <conditional-map archive> --out-dir <seed directory>`. The map archive
+   contains `posterior_indices` and `q_maps`, with conditional means and draws
+   paired with their atmosphere states. The labels `q50` and `q95` select M8
+   GP-amplitude quantiles; they are not NUTS acceptance targets.
+2. Run `check_m9_v3_diffgrid.py` for both `m8_q50_draw0.npz` and
+   `m8_q95_draw0.npz`, using `--samples <M8 archive> --chip-indices 0,1,2,3
+   --nodes 81 --x64 --rt-pixel-batch-size 64 --out-dir <new validation directory>`
+   and the corresponding `--state-file`. This creates separate real-space
+   DiffGrid caches and checks spectra, likelihoods, and gradients against the
+   teacher. Initialization and sampling require passing validation evidence.
+3. Aggregate the reports:
+
+   ```bash
+   python examples/luhman16b_yama/summarize_m9_v3_forward.py \
+     --reports <q50 validation>/diffgrid_validation.json \
+               <q95 validation>/diffgrid_validation.json \
+     --selected-nodes 81 --out results/m9/v3/forward_gate_81.json
+   ```
+
+Run both production chains sequentially with the C-shell launcher:
+
+```bash
+env DORAEX_PYTHON=/path/to/python EXOJAX_DIR=/path/to/exojax \
+  DORAEX_M9_SAMPLES=/path/to/observations-and-M8-samples.npz \
+  DORAEX_M9_SEED_DIR=/path/to/seeds \
+  DORAEX_M9_FORWARD_GATE=/path/to/forward_gate_81.json \
+  DORAEX_DATABASE_DIR=/path/to/molecular-database \
+  csh/exe_m9_v3_production.csh
+```
+
+The schedule is 2,000 warmup iterations and 1,500 saved draws per chain,
+with maximum tree depths 9 during warmup and 11 during sampling. The local
+curvature metric is fixed while the step size adapts. The launcher uses a GPU
+lock, creates a new output directory, and refuses missing inputs. The runner
+records source hashes, the fixed observation contract, sampler settings, and
+completion/failure markers. Raw HMC draws are saved before conditional
+normalization recovery. `--stage initialize --initial-map-source raw-linear`
+is available separately for initialization experiments; production uses the
+archived coherent state.
+
+Generate exact maps and representative spectra on CPU after a run completes:
+
+```bash
+python examples/luhman16b_yama/make_m9_v3_exact_products.py \
+  --run-dir <completed chain> --out-dir <new product directory> \
+  --primary-dir <new bundle directory> --pressure-max 50
+```
+
+This checks provenance and replays a coherent saved draw against the archived
+target. The pressure display limit changes only the color scale; full-range
+maps and the underlying values are retained. `analyze_m9_v3_pilots.py --runs
+<q50 chain> <q95 chain> --out <diagnostics.json>` computes independent-chain
+diagnostics only for matching targets and distinct seeds. Assess mean-map
+stability and uncertainty by quantity; computational completion alone does not
+establish scientific convergence.
+
+## Milestone 1
 
 The Milestone 1 run uses the same precomputed intrinsic line profile as Ureshino et al., `posterior_predictive_vsini=0.npz`. ExoJAX is not run inside this milestone.
 
