@@ -241,7 +241,7 @@ def summarize_group(runs):
         pooled[name] = values.ravel()
         constant = np.ptp(values) == 0
         bulk = float(az.ess(values, method="bulk")) if independent and used >= 4 and not constant else None
-        tail = float(az.ess(values, method="tail")) if independent and used >= 4 and not constant else None
+        tail = float(az.ess(values, method="tail", prob=(0.05, 0.95))) if independent and used >= 4 and not constant else None
         rhat = float(az.rhat(values, method="rank")) if rhat_available and not constant else None
         parameters[name] = {
             "mean": float(values.mean()), "sd": float(values.std(ddof=1)) if values.size > 1 else None,

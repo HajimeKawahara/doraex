@@ -90,6 +90,24 @@ def test_independent_chains_report_rhat_physical_maps_energy_and_measured_cost(t
     assert not group["scientifically_accepted"]
 
 
+def test_tail_ess_preserves_five_percent_quantiles_with_explicit_prob(tmp_path, monkeypatch):
+    directories = [write_run(tmp_path, f"seed{seed}", seed) for seed in (0, 1)]
+    values = np.stack([analysis.load_run(path)["series"]["log_p_cloud"] for path in directories])
+    original_ess = analysis.az.ess
+    expected = min(float(original_ess(values, method="quantile", prob=prob))
+                   for prob in (0.05, 0.95))
+
+    def require_tail_prob(values, *, method, **kwargs):
+        # Recent ArviZ requires prob; enforce this even on older installations.
+        if method == "tail":
+            assert kwargs["prob"] == (0.05, 0.95)
+        return original_ess(values, method=method, **kwargs)
+
+    monkeypatch.setattr(analysis.az, "ess", require_tail_prob)
+    group = analysis.analyze_runs(directories)["groups"][0]
+    assert group["parameters"]["log_p_cloud"]["rank_tail_ess"] == pytest.approx(expected)
+
+
 def test_single_chain_and_ten_draw_pilots_are_not_accepted(tmp_path):
     directory = write_run(tmp_path, "short", 0, count=10)
     group = analysis.analyze_runs([directory])["groups"][0]

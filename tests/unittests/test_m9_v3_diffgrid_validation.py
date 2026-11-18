@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+import hashlib
 import json
 import sys
 
@@ -11,6 +12,17 @@ import pytest
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples/luhman16b_yama"
 sys.path.insert(0, str(EXAMPLES))
 import check_m9_v3_diffgrid as validation
+import summarize_m9_v3_forward as summary
+
+
+@pytest.mark.parametrize("hash_file", [validation.sha256, summary.sha256], ids=["validation", "summary"])
+@pytest.mark.parametrize("size", [0, 2 * 1024 * 1024 + 17], ids=["empty", "multiple_blocks"])
+def test_file_hash_without_python311_api(tmp_path, monkeypatch, hash_file, size):
+    monkeypatch.delattr(hashlib, "file_digest", raising=False)
+    payload = (bytes(range(256)) * (size // 256 + 1))[:size]
+    path = tmp_path / "binary.dat"
+    path.write_bytes(payload)
+    assert hash_file(path) == hashlib.sha256(payload).hexdigest()
 
 
 def test_masked_comparison_matches_direct_gaussian_likelihood():
