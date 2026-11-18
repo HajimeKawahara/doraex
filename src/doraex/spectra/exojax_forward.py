@@ -10,6 +10,133 @@ import numpy as np
 from doraex.constants import SPEED_OF_LIGHT
 
 
+DIFFGRID_INTERPOLATION_LIMITER = "fritsch_carlson_monotone_log_slopes"
+
+
+def _monotone_diffgrid_derivative_grid(
+    inverse_temperature_grid,
+    log_cross_section_grid,
+    log_cross_section_derivative_grid,
+):
+    """Limit Hermite slopes so every inverse-temperature interval is monotone."""
+
+    import jax.numpy as jnp
+
+    inverse_temperature_grid = jnp.asarray(inverse_temperature_grid)
+    values = jnp.asarray(log_cross_section_grid)
+    slopes = jnp.asarray(log_cross_section_derivative_grid)
+    interval_width = jnp.diff(inverse_temperature_grid)[None, :, None]
+    secants = jnp.diff(values, axis=1) / interval_width
+
+    left_secants = jnp.concatenate((secants[:, :1], secants), axis=1)
+    right_secants = jnp.concatenate((secants, secants[:, -1:]), axis=1)
+    slope_sign = jnp.sign(slopes)
+    same_direction = (
+        (slope_sign == jnp.sign(left_secants))
+        & (slope_sign == jnp.sign(right_secants))
+        & (slope_sign != 0.0)
+    )
+    slopes = jnp.where(same_direction, slopes, 0.0)
+
+    nonzero_secant = secants != 0.0
+    safe_secants = jnp.where(nonzero_secant, secants, 1.0)
+    alpha = jnp.where(nonzero_secant, slopes[:, :-1] / safe_secants, 0.0)
+    beta = jnp.where(nonzero_secant, slopes[:, 1:] / safe_secants, 0.0)
+    radius = jnp.hypot(alpha, beta)
+    safe_radius = jnp.where(radius > 3.0, radius, 1.0)
+    interval_scale = jnp.where(radius > 3.0, 3.0 / safe_radius, 1.0)
+    node_scale = jnp.concatenate(
+        (
+            interval_scale[:, :1],
+            jnp.minimum(interval_scale[:, :-1], interval_scale[:, 1:]),
+            interval_scale[:, -1:],
+        ),
+        axis=1,
+    )
+    return slopes * node_scale
+
+
+def _prepare_monotone_diffgrid(opa):
+    """Precompute the runtime C1 monotone slopes for one DiffGrid table."""
+
+    import jax
+
+    info = opa.diffgrid_info
+    limited_slopes = jax.jit(_monotone_diffgrid_derivative_grid)(
+        info.inverse_temperature_grid,
+        info.log_cross_section_grid,
+        info.log_cross_section_derivative_grid,
+    )
+    opa._doraex_log_cross_section_derivative_grid = jax.block_until_ready(
+        limited_slopes
+    )
+
+
+def _monotone_diffgrid_xsmatrix(opa, temperature):
+    """Evaluate DiffGrid opacity with C1 monotone cubic Hermite interpolation."""
+
+    import jax.numpy as jnp
+    from exojax.opacity.diffgrid.core import interpolate_log_cross_section
+
+    temperature = jnp.asarray(temperature)
+    info = opa.diffgrid_info
+    if temperature.ndim != 1 or temperature.shape != info.pressure_grid.shape:
+        raise ValueError(
+            "temperature shape must match the pressure layers used to build "
+            "this diffgrid table."
+        )
+    check_temperature = getattr(opa, "_check_temperature_grid_if_concrete", None)
+    if check_temperature is not None:
+        check_temperature(temperature)
+
+    inverse_temperature_grid = info.inverse_temperature_grid
+    log_cross_section_grid = info.log_cross_section_grid
+    derivative_grid = getattr(
+        opa,
+        "_doraex_log_cross_section_derivative_grid",
+        None,
+    )
+    if derivative_grid is None:
+        derivative_grid = _monotone_diffgrid_derivative_grid(
+            inverse_temperature_grid,
+            log_cross_section_grid,
+            info.log_cross_section_derivative_grid,
+        )
+    log_cross_section = interpolate_log_cross_section(
+        temperature,
+        inverse_temperature_grid,
+        log_cross_section_grid,
+        derivative_grid,
+    )
+
+    dtype = log_cross_section.dtype
+    log_cross_section_ceiling = jnp.log(jnp.finfo(dtype).max) - jnp.log(
+        jnp.asarray(2.0, dtype=dtype)
+    )
+    log_cross_section = jnp.clip(
+        log_cross_section,
+        jnp.asarray(info.log_cross_section_floor, dtype=dtype),
+        log_cross_section_ceiling,
+    )
+    xsmatrix = jnp.exp(log_cross_section)
+
+    inverse_temperature = 1.0 / temperature
+    coordinate_tolerance = 8.0 * jnp.finfo(inverse_temperature_grid.dtype).eps
+    valid = (
+        jnp.isfinite(temperature)
+        & (temperature > 0.0)
+        & (
+            inverse_temperature
+            >= inverse_temperature_grid[0] * (1.0 - coordinate_tolerance)
+        )
+        & (
+            inverse_temperature
+            <= inverse_temperature_grid[-1] * (1.0 + coordinate_tolerance)
+        )
+    )
+    return jnp.where(valid[:, None], xsmatrix, jnp.nan)
+
+
 def _internal_spectrum_wavelength_bounds(
     observed_wavelengths,
     sampling_wavelengths=None,
@@ -417,6 +544,8 @@ class Luhman16BPowerLawColumnModel:
         resolving_power=100000.0,
         save_opacity_cache=True,
         sampling_wavelengths=None,
+        opacity_mode="premodit",
+        diffgrid_temperature_nodes=21,
     ):
         """Initialize the ExoJAX objects for fixed-profile generation."""
 
@@ -439,6 +568,15 @@ class Luhman16BPowerLawColumnModel:
                 "increasing."
             )
         self.parameters = parameters
+        if opacity_mode not in ("premodit", "diffgrid"):
+            raise ValueError("opacity_mode must be 'premodit' or 'diffgrid'.")
+        if (
+            not isinstance(diffgrid_temperature_nodes, (int, np.integer))
+            or diffgrid_temperature_nodes < 2
+        ):
+            raise ValueError("diffgrid_temperature_nodes must be at least 2.")
+        self.opacity_mode = opacity_mode
+        self.diffgrid_temperature_nodes = int(diffgrid_temperature_nodes)
         rv_factor = 1.0 + parameters.rv / (SPEED_OF_LIGHT * 1.0e-3)
         self.internal_wavelength_bounds = _internal_spectrum_wavelength_bounds(
             self.observed_wavelengths,
@@ -469,6 +607,8 @@ class Luhman16BPowerLawColumnModel:
             nlayer=nlayer,
             t_low=t_low,
             t_high=t_high,
+            opacity_mode=opacity_mode,
+            diffgrid_temperature_nodes=self.diffgrid_temperature_nodes,
         )
         self.opacity_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -488,7 +628,7 @@ class Luhman16BPowerLawColumnModel:
             internal_wavelength_max,
             nx,
             unit="AA",
-            xsmode="premodit",
+            xsmode=opacity_mode,
         )
         self.observed_nu = jnp.asarray(1.0e8 / self.observed_wavelengths)
         self.sampling_nu = jnp.asarray(1.0e8 / self.sampling_wavelengths)
@@ -521,6 +661,12 @@ class Luhman16BPowerLawColumnModel:
     def _load_molecular_opacities(self, t_low, t_high):
         from exojax.opacity import OpaPremodit, saveopa
 
+        opacity_mode = getattr(self, "opacity_mode", "premodit")
+        if opacity_mode == "diffgrid":
+            from exojax.opacity import OpaDiffgrid
+        else:
+            OpaDiffgrid = None
+
         elower_max = {
             "CO": 58242.689,
             "H2O": 23726.625476,
@@ -532,7 +678,15 @@ class Luhman16BPowerLawColumnModel:
         for molecule, max_elower in elower_max.items():
             cache_path = self.opacity_cache_dir / f"opa{molecule}.zarr"
             if cache_path.exists():
-                opa = OpaPremodit.from_saved_opa(str(cache_path))
+                opacity_class = (
+                    OpaDiffgrid
+                    if opacity_mode == "diffgrid"
+                    else OpaPremodit
+                )
+                opa = opacity_class.from_saved_opa(str(cache_path))
+                if opacity_mode == "diffgrid":
+                    opa.check_pressure_grid(np.asarray(self.art.pressure))
+                    _prepare_monotone_diffgrid(opa)
                 molmass = opa.aux["molmass"]
             else:
                 from exojax.database import MdbExomol
@@ -546,7 +700,7 @@ class Luhman16BPowerLawColumnModel:
                 molmass = mdb.molmass
                 snapshot = mdb.to_snapshot()
                 del mdb
-                opa = OpaPremodit.from_snapshot(
+                teacher = OpaPremodit.from_snapshot(
                     snapshot,
                     nu_grid=self.nu_grid,
                     diffmode=0,
@@ -554,6 +708,30 @@ class Luhman16BPowerLawColumnModel:
                     dit_grid_resolution=1.0,
                     allow_32bit=True,
                 )
+                if opacity_mode == "diffgrid":
+                    import jax
+
+                    inverse_temperature_grid = np.linspace(
+                        1.0 / t_high,
+                        1.0 / t_low,
+                        getattr(self, "diffgrid_temperature_nodes", 21),
+                    )
+                    opa = OpaDiffgrid(
+                        teacher,
+                        temperature_grid=1.0 / inverse_temperature_grid,
+                        pressure_grid=np.asarray(self.art.pressure),
+                    )
+                    jax.block_until_ready(
+                        (
+                            opa.log_cross_section_grid,
+                            opa.log_cross_section_derivative_grid,
+                        )
+                    )
+                    opa.check_pressure_grid(np.asarray(self.art.pressure))
+                    _prepare_monotone_diffgrid(opa)
+                    del teacher
+                else:
+                    opa = teacher
                 if self.save_opacity_cache:
                     saveopa(opa, str(cache_path), format="zarr", aux={"molmass": molmass})
             opacities[molecule] = opa
@@ -600,14 +778,19 @@ class Luhman16BPowerLawColumnModel:
         zeta_vmr=0.0,
         log_vmr_values=None,
     ):
-        jnp = self.jnp
         mmr, vmr_h2, vmr_he, mmw = self._abundances(
             zeta_vmr=zeta_vmr,
             log_vmr_values=log_vmr_values,
         )
         dtau = 0.0
         for molecule, opa in self.opacities.items():
-            xsmatrix = opa.xsmatrix(temperature, self.art.pressure)
+            if getattr(self, "opacity_mode", "premodit") == "diffgrid":
+                xsmatrix = _monotone_diffgrid_xsmatrix(
+                    opa,
+                    temperature,
+                )
+            else:
+                xsmatrix = opa.xsmatrix(temperature, self.art.pressure)
             profile = self.art.constant_mmr_profile(mmr[molecule])
             dtau = dtau + self.art.opacity_profile_xs(
                 xsmatrix, profile, self.mol_masses[molecule], gravity
@@ -727,6 +910,114 @@ class Luhman16BPowerLawColumnModel:
             logg=logg,
         )
 
+    def cloudy_map_at_log_vmrs(
+        self,
+        t0,
+        alpha,
+        log_vmr_co,
+        log_vmr_h2o,
+        log_vmr_ch4,
+        log_vmr_hf,
+        log_p_cloud,
+        logg=None,
+        rt_batch_size=16,
+    ):
+        """Evaluate exact local spectra for a pixel cloud-pressure map."""
+
+        return self._cloudy_map_at_log_vmrs(
+            t0,
+            alpha,
+            log_vmr_co,
+            log_vmr_h2o,
+            log_vmr_ch4,
+            log_vmr_hf,
+            log_p_cloud,
+            logg=logg,
+            rt_batch_size=rt_batch_size,
+            normalize=True,
+        )
+
+    def cloudy_raw_map_at_log_vmrs(
+        self,
+        t0,
+        alpha,
+        log_vmr_co,
+        log_vmr_h2o,
+        log_vmr_ch4,
+        log_vmr_hf,
+        log_p_cloud,
+        logg=None,
+        rt_batch_size=16,
+    ):
+        """Evaluate unnormalized exact spectra for a cloud-pressure map."""
+
+        return self._cloudy_map_at_log_vmrs(
+            t0,
+            alpha,
+            log_vmr_co,
+            log_vmr_h2o,
+            log_vmr_ch4,
+            log_vmr_hf,
+            log_p_cloud,
+            logg=logg,
+            rt_batch_size=rt_batch_size,
+            normalize=False,
+        )
+
+    def _cloudy_map_at_log_vmrs(
+        self,
+        t0,
+        alpha,
+        log_vmr_co,
+        log_vmr_h2o,
+        log_vmr_ch4,
+        log_vmr_hf,
+        log_p_cloud,
+        *,
+        logg,
+        rt_batch_size,
+        normalize,
+    ):
+        """Evaluate a pressure map while reusing its shared gas opacity."""
+
+        import jax
+        from exojax.postproc.response import ipgauss_sampling
+
+        jnp = self.jnp
+        params = self.parameters
+        temperature = self.art.powerlaw_temperature(t0, alpha)
+        gravity = 10.0 ** (params.logg if logg is None else logg)
+        gas_dtau = self._dtau_molecular_and_cia(
+            temperature,
+            gravity,
+            log_vmr_values={
+                "CO": log_vmr_co,
+                "H2O": log_vmr_h2o,
+                "CH4": log_vmr_ch4,
+                "HF": log_vmr_hf,
+            },
+        )
+
+        def evaluate_pixel(pixel_log_p_cloud):
+            dtau = gas_dtau + self._cloud_dtau(pixel_log_p_cloud)[:, None]
+            flux = self.art.run(dtau, temperature)
+            if normalize:
+                flux = flux / jnp.average(flux)
+            return ipgauss_sampling(
+                self.sampling_nu,
+                self.nu_grid,
+                flux,
+                self.beta_inst,
+                params.rv,
+                self.velocity_kernel,
+            )
+
+        return jax.lax.map(
+            jax.checkpoint(evaluate_pixel),
+            jnp.asarray(log_p_cloud),
+            batch_size=rt_batch_size,
+        )
+
     def cloudy_raw_at_log_vmrs(
         self,
         t0,
@@ -807,6 +1098,8 @@ def _opacity_cache_namespace(
     nlayer,
     t_low,
     t_high,
+    opacity_mode="premodit",
+    diffgrid_temperature_nodes=21,
 ):
     """Return a wavelength-grid-specific opacity cache directory."""
 
@@ -820,8 +1113,12 @@ def _opacity_cache_namespace(
         "nlayer": int(nlayer),
         "t_low": float(t_low),
         "t_high": float(t_high),
-        "xsmode": "premodit",
+        "xsmode": opacity_mode,
     }
+    if opacity_mode == "diffgrid":
+        payload["diffgrid_temperature_nodes"] = int(
+            diffgrid_temperature_nodes
+        )
     digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
     label = (
         f"wave{payload['wave_min']:.3f}-{payload['wave_max']:.3f}"

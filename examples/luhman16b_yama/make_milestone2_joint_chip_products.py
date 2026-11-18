@@ -267,7 +267,7 @@ def _plot_log_p_cloud_map(mean_map, std_map, out_path, cmap="inferno"):
     )
 
 
-def _plot_p_cloud_map(mean_map, std_map, out_path, cmap="inferno"):
+def _plot_p_cloud_map(mean_map, std_map, out_path, cmap="inferno", vmax=None):
     _plot_two_panel_map(
         mean_map,
         std_map,
@@ -280,6 +280,7 @@ def _plot_p_cloud_map(mean_map, std_map, out_path, cmap="inferno"):
         colorbar_orientation="vertical",
         invert_top_colorbar=True,
         top_colorbar_unit="bar",
+        top_vmax=vmax,
     )
 
 

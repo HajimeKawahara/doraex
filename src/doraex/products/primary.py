@@ -200,7 +200,7 @@ def primary_product_definitions(
         PrimaryProductDefinition(
             f"joint_chip_{chip_index}",
             f"figure9_joint_chip{chip_index}.png",
-            f"64-bit joint chip model/residual product for chip {chip_index}.",
+            f"Joint chip model/residual product for chip {chip_index}.",
         )
         for chip_index in chip_indices
     )
@@ -354,6 +354,7 @@ def write_primary_info_products(
 ) -> dict[str, object]:
     """Write summary tables and JSON values needed alongside primary figures."""
 
+    excluded_products = set(excluded_product_names)
     samples = np.load(samples_path, allow_pickle=True)
     diagnostics = _read_json_if_exists(samples_path.parent / "diagnostics.json")
     joint_diagnostics = _read_json_if_exists(product_dir / "joint_chip_diagnostics.json")
@@ -490,30 +491,35 @@ def write_primary_info_products(
             )
         )
 
-    single_line_payload = _build_single_line_info(product_dir, single_line_summary)
-    info_files.append(
-        _write_json(info_dir / "single_line_pressure_response_summary.json", single_line_payload)
-    )
-    if single_line_payload["lines"]:
+    single_line_payload = {"excluded": True, "lines": []}
+    if "single_line_pressure_response" not in excluded_products:
+        single_line_payload = _build_single_line_info(product_dir, single_line_summary)
         info_files.append(
-            _write_csv(
-                info_dir / "single_line_pressure_response_summary.csv",
-                single_line_payload["lines"],
-                fieldnames=[
-                    "label",
-                    "path",
-                    "continuum",
-                    "line_depth",
-                    "molecule",
-                    "requested_center_wavelength",
-                    "selected_center_wavelength",
-                    "observed_frame_center_wavelength",
-                    "line_strength",
-                    "line_strength_temperature",
-                    "radial_velocity_kms",
-                ],
+            _write_json(
+                info_dir / "single_line_pressure_response_summary.json",
+                single_line_payload,
             )
         )
+        if single_line_payload["lines"]:
+            info_files.append(
+                _write_csv(
+                    info_dir / "single_line_pressure_response_summary.csv",
+                    single_line_payload["lines"],
+                    fieldnames=[
+                        "label",
+                        "path",
+                        "continuum",
+                        "line_depth",
+                        "molecule",
+                        "requested_center_wavelength",
+                        "selected_center_wavelength",
+                        "observed_frame_center_wavelength",
+                        "line_strength",
+                        "line_strength_temperature",
+                        "radial_velocity_kms",
+                    ],
+                )
+            )
 
     source_payload = {
         "samples": str(samples_path),
@@ -522,11 +528,14 @@ def write_primary_info_products(
         "joint_chip_diagnostics": str(product_dir / "joint_chip_diagnostics.json"),
         "on_the_fly_product_summary": str(product_dir / "on_the_fly_product_summary.json"),
         "minimum_window_summary": str(product_dir / "products" / "minimum_window_summary.json"),
-        "single_line_comparison": str(
-            product_dir / "products" / f"{prefix}_single_line_pressure_response_comparison.json"
-        ),
     }
-    if "linearization_check" not in set(excluded_product_names):
+    if "single_line_pressure_response" not in excluded_products:
+        source_payload["single_line_comparison"] = str(
+            product_dir
+            / "products"
+            / f"{prefix}_single_line_pressure_response_comparison.json"
+        )
+    if "linearization_check" not in excluded_products:
         source_payload["linearization_check_summary"] = str(
             product_dir
             / "products"
@@ -566,6 +575,9 @@ def _build_run_summary(
         "num_chains",
         "target_accept_prob",
         "max_tree_depth",
+        "warmup_max_tree_depth",
+        "adapt_mass_matrix",
+        "marginalized_A",
         "dense_mass",
         "fix_nuisance",
         "fix_a",
@@ -985,7 +997,7 @@ def _count_sampled_parameters(
         count += sum(site_size(name) for name in physical_sites if name in files)
 
     direct_sigma_log_p = bool(metadata("direct_sigma_log_p", False)) or (
-        metadata("sigma_log_p_parameterization") == "direct_halfnormal"
+        metadata("sigma_log_p_parameterization") in {"direct_halfnormal", "log_halfnormal"}
     )
     sigma_is_fixed = bool(metadata("fix_sigma_log_p", False)) or (
         metadata("sigma_log_p_parameterization") == "fixed"
@@ -1000,6 +1012,9 @@ def _count_sampled_parameters(
     ):
         count += site_size("sigma_log_p")
 
+    if "pressure_map_latent" in files:
+        count += site_size("pressure_map_latent")
+
     fix_all_nuisance = bool(metadata("fix_nuisance", False))
     nuisance_specs = (
         ("A", "fix_a"),
@@ -1008,6 +1023,8 @@ def _count_sampled_parameters(
     )
     for name, flag_name in nuisance_specs:
         if name not in files:
+            continue
+        if name == "A" and bool(metadata("marginalized_A", False)):
             continue
         if joint_coordinates and name in {"A", "sigma_d"}:
             continue
@@ -1104,7 +1121,14 @@ def _write_primary_bundle_readme(
             "fixed/free status.",
             "- `info/cloud_map_summary.csv`: cloud-map pixel statistics.",
             "- `info/line_stack_selected_lines.csv`: line-stack wavelength selections.",
-            "- `info/single_line_pressure_response_summary.csv`: pure-line diagnostic numbers.",
+            *(
+                []
+                if "single_line_pressure_response" in excluded_products
+                else [
+                    "- `info/single_line_pressure_response_summary.csv`: "
+                    "pure-line diagnostic numbers."
+                ]
+            ),
             "",
             "## Sources",
             "",

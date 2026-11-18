@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -14,6 +15,8 @@ from doraex.spectra.exojax_forward import (
     FixedPowerLawAtmosphere,
     Luhman16BPowerLawColumnModel,
     _internal_spectrum_wavelength_bounds,
+    _monotone_diffgrid_derivative_grid,
+    _monotone_diffgrid_xsmatrix,
 )
 from doraex.workflows import on_the_fly_pressure_retrieval
 from doraex.workflows.on_the_fly_pressure_retrieval import (
@@ -211,6 +214,354 @@ def test_cold_opacity_cache_allows_32bit_generation(monkeypatch, tmp_path):
     assert set(mol_masses) == set(opacities)
     assert len(calls) == len(opacities)
     assert all(call["allow_32bit"] is True for call in calls)
+
+
+def test_cold_diffgrid_cache_uses_inverse_temperature_nodes(
+    monkeypatch,
+    tmp_path,
+):
+    calls = []
+
+    class _StubMdbExomol:
+        def __init__(self, *args, **kwargs):
+            self.molmass = 1.0
+
+        def to_snapshot(self):
+            return object()
+
+    class _StubOpaPremodit:
+        @classmethod
+        def from_snapshot(cls, snapshot, **kwargs):
+            return SimpleNamespace(method="premodit")
+
+    class _StubOpaDiffgrid:
+        def __init__(self, teacher, temperature_grid, pressure_grid):
+            del teacher
+            inverse_temperature_grid = jnp.asarray(1.0 / temperature_grid)
+            pressure_grid = jnp.asarray(pressure_grid)
+            calls.append(
+                (
+                    np.asarray(temperature_grid),
+                    np.asarray(pressure_grid),
+                )
+            )
+            self.log_cross_section_grid = jnp.ones((2, 5, 2))
+            self.log_cross_section_derivative_grid = jnp.ones((2, 5, 2))
+            self.diffgrid_info = SimpleNamespace(
+                pressure_grid=pressure_grid,
+                temperature_grid=jnp.asarray(temperature_grid),
+                inverse_temperature_grid=inverse_temperature_grid,
+                log_cross_section_grid=self.log_cross_section_grid,
+                log_cross_section_derivative_grid=(
+                    self.log_cross_section_derivative_grid
+                ),
+                log_cross_section_floor=jnp.asarray(-80.0),
+            )
+
+        def check_pressure_grid(self, pressure_grid):
+            np.testing.assert_allclose(pressure_grid, [0.1, 1.0])
+
+    exojax_module = ModuleType("exojax")
+    database_module = ModuleType("exojax.database")
+    database_module.MdbExomol = _StubMdbExomol
+    opacity_module = ModuleType("exojax.opacity")
+    opacity_module.OpaDiffgrid = _StubOpaDiffgrid
+    opacity_module.OpaPremodit = _StubOpaPremodit
+    opacity_module.saveopa = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "exojax", exojax_module)
+    monkeypatch.setitem(sys.modules, "exojax.database", database_module)
+    monkeypatch.setitem(sys.modules, "exojax.opacity", opacity_module)
+
+    model = object.__new__(Luhman16BPowerLawColumnModel)
+    model.opacity_mode = "diffgrid"
+    model.diffgrid_temperature_nodes = 5
+    model.opacity_cache_dir = tmp_path
+    model.molecule_paths = {
+        molecule: f"{molecule}.database"
+        for molecule in ("CO", "H2O", "CH4", "HF")
+    }
+    model.nu_grid = np.linspace(1.0, 2.0, 4)
+    model.art = SimpleNamespace(pressure=jnp.asarray([0.1, 1.0]))
+    model.save_opacity_cache = False
+
+    opacities, mol_masses = model._load_molecular_opacities(200.0, 2000.0)
+
+    assert set(opacities) == {"CO", "H2O", "CH4", "HF"}
+    assert set(mol_masses) == set(opacities)
+    assert len(calls) == len(opacities)
+    expected_inverse_temperature = np.linspace(1.0 / 2000.0, 1.0 / 200.0, 5)
+    for temperature_grid, pressure_grid in calls:
+        np.testing.assert_allclose(
+            1.0 / temperature_grid,
+            expected_inverse_temperature,
+        )
+        np.testing.assert_allclose(pressure_grid, [0.1, 1.0])
+
+
+def test_diffgrid_runtime_uses_monotone_cross_sections():
+    class _Opacity:
+        diffgrid_info = SimpleNamespace(
+            pressure_grid=jnp.asarray([0.1, 1.0]),
+            inverse_temperature_grid=jnp.asarray([1.0e-3, 2.5e-3]),
+            log_cross_section_grid=jnp.full((2, 2, 3), -50.0),
+            log_cross_section_derivative_grid=jnp.zeros((2, 2, 3)),
+            log_cross_section_floor=jnp.asarray(-80.0),
+        )
+
+        def xsmatrix(self, *args):
+            raise AssertionError("DiffGrid runtime must apply the local limiter.")
+
+    model = object.__new__(Luhman16BPowerLawColumnModel)
+    model.jnp = jnp
+    model.opacity_mode = "diffgrid"
+    model.opacities = {"CO": _Opacity()}
+    model.mol_masses = {"CO": 28.0}
+    model._abundances = lambda **kwargs: (
+        {"CO": jnp.asarray(0.1)},
+        jnp.asarray(0.8),
+        jnp.asarray(0.1),
+        jnp.asarray(2.3),
+    )
+    model.art = SimpleNamespace(
+        pressure=jnp.asarray([0.1, 1.0]),
+        constant_mmr_profile=lambda value: jnp.full((2,), value),
+        opacity_profile_xs=lambda *args: jnp.zeros((2, 3)),
+        opacity_profile_cia=lambda *args: jnp.zeros((2, 3)),
+    )
+    cia = SimpleNamespace(
+        logacia_matrix=lambda temperature: jnp.zeros((2, 3))
+    )
+    model.opa_cia_h2h2 = cia
+    model.opa_cia_h2he = cia
+
+    result = model._dtau_molecular_and_cia(
+        jnp.asarray([500.0, 700.0]),
+        jnp.asarray(1.0e5),
+    )
+
+    assert result.shape == (2, 3)
+
+
+def test_monotone_diffgrid_prevents_scaled_opacity_overflow():
+    inverse_temperature_grid = jnp.asarray([5.0e-4, 1.0e-3])
+    log_cross_section_grid = jnp.asarray([[[-80.0], [-80.0]]])
+    derivative_grid = jnp.asarray([[[2.0e6], [-2.0e6]]])
+    opacity = SimpleNamespace(
+        diffgrid_info=SimpleNamespace(
+            pressure_grid=jnp.asarray([1.0]),
+            inverse_temperature_grid=inverse_temperature_grid,
+            log_cross_section_grid=log_cross_section_grid,
+            log_cross_section_derivative_grid=derivative_grid,
+            log_cross_section_floor=jnp.asarray(-80.0),
+        )
+    )
+    temperature = jnp.asarray([1.0 / 7.5e-4])
+
+    def scaled_opacity(value):
+        return jnp.sum(_monotone_diffgrid_xsmatrix(opacity, value)) * 1.0e10
+
+    objective, gradient = jax.value_and_grad(scaled_opacity)(temperature)
+
+    assert np.isfinite(objective)
+    assert np.all(np.isfinite(gradient))
+    np.testing.assert_allclose(
+        _monotone_diffgrid_xsmatrix(opacity, temperature),
+        np.exp(-80.0),
+    )
+
+
+def test_monotone_diffgrid_slopes_preserve_bounds_and_c1_nodes():
+    inverse_temperature_grid = jnp.asarray([5.0e-4, 1.0e-3, 1.5e-3])
+    values = jnp.asarray([[[-20.0], [-10.0], [0.0]]])
+    raw_slopes = jnp.asarray([[[2.0e6], [2.0e6], [2.0e6]]])
+    limited_slopes = _monotone_diffgrid_derivative_grid(
+        inverse_temperature_grid,
+        values,
+        raw_slopes,
+    )
+    opacity = SimpleNamespace(
+        diffgrid_info=SimpleNamespace(
+            pressure_grid=jnp.asarray([1.0]),
+            inverse_temperature_grid=inverse_temperature_grid,
+            log_cross_section_grid=values,
+            log_cross_section_derivative_grid=raw_slopes,
+            log_cross_section_floor=jnp.asarray(-80.0),
+        ),
+        _doraex_log_cross_section_derivative_grid=limited_slopes,
+    )
+
+    sample_inverse_temperatures = jnp.linspace(5.0e-4, 1.5e-3, 101)
+    sampled = jax.vmap(
+        lambda inverse_temperature: jnp.log(
+            _monotone_diffgrid_xsmatrix(
+                opacity,
+                jnp.asarray([1.0 / inverse_temperature]),
+            )[0, 0]
+        )
+    )(sample_inverse_temperatures)
+    assert np.all(np.diff(np.asarray(sampled)) >= 0.0)
+    assert float(jnp.min(sampled)) >= -20.0
+    assert float(jnp.max(sampled)) <= 0.0
+
+    node_temperature = 1.0 / inverse_temperature_grid[1]
+    left_gradient = jax.grad(
+        lambda temperature: jnp.log(
+            _monotone_diffgrid_xsmatrix(
+                opacity,
+                jnp.asarray([temperature]),
+            )[0, 0]
+        )
+    )(node_temperature * (1.0 + 1.0e-6))
+    right_gradient = jax.grad(
+        lambda temperature: jnp.log(
+            _monotone_diffgrid_xsmatrix(
+                opacity,
+                jnp.asarray([temperature]),
+            )[0, 0]
+        )
+    )(node_temperature * (1.0 - 1.0e-6))
+    np.testing.assert_allclose(left_gradient, right_gradient, rtol=5.0e-6)
+
+
+def test_warm_diffgrid_cache_validates_bound_pressure(monkeypatch, tmp_path):
+    loaded = []
+    checked = []
+
+    class _LoadedDiffgrid:
+        aux = {"molmass": 1.0}
+        diffgrid_info = SimpleNamespace(
+            pressure_grid=jnp.asarray([0.1, 1.0]),
+            temperature_grid=jnp.asarray([1000.0, 500.0]),
+            inverse_temperature_grid=jnp.asarray([1.0e-3, 2.0e-3]),
+            log_cross_section_grid=jnp.zeros((2, 2, 3)),
+            log_cross_section_derivative_grid=jnp.zeros((2, 2, 3)),
+            log_cross_section_floor=jnp.asarray(-80.0),
+        )
+
+        def check_pressure_grid(self, pressure_grid):
+            checked.append(np.asarray(pressure_grid))
+
+    class _StubOpaDiffgrid:
+        @classmethod
+        def from_saved_opa(cls, path):
+            loaded.append(path)
+            return _LoadedDiffgrid()
+
+    class _StubOpaPremodit:
+        @classmethod
+        def from_saved_opa(cls, path):
+            raise AssertionError(f"unexpected PreMODIT load: {path}")
+
+    opacity_module = ModuleType("exojax.opacity")
+    opacity_module.OpaDiffgrid = _StubOpaDiffgrid
+    opacity_module.OpaPremodit = _StubOpaPremodit
+    opacity_module.saveopa = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "exojax.opacity", opacity_module)
+
+    molecules = ("CO", "H2O", "CH4", "HF")
+    for molecule in molecules:
+        (tmp_path / f"opa{molecule}.zarr").mkdir()
+
+    model = object.__new__(Luhman16BPowerLawColumnModel)
+    model.opacity_mode = "diffgrid"
+    model.opacity_cache_dir = tmp_path
+    model.art = SimpleNamespace(pressure=jnp.asarray([0.1, 1.0]))
+
+    opacities, mol_masses = model._load_molecular_opacities(200.0, 2000.0)
+
+    assert set(opacities) == set(molecules)
+    assert set(mol_masses) == set(molecules)
+    assert len(loaded) == len(molecules)
+    assert len(checked) == len(molecules)
+    for pressure_grid in checked:
+        np.testing.assert_allclose(pressure_grid, [0.1, 1.0])
+
+
+def test_exact_cloud_map_reuses_gas_opacity_and_supports_grad(monkeypatch):
+    import exojax.postproc.response as exojax_response
+
+    gas_calls = []
+
+    def fake_ipgauss_sampling(query_nu, nu_grid, flux, *args):
+        del query_nu, nu_grid, args
+        return flux
+
+    monkeypatch.setattr(
+        exojax_response,
+        "ipgauss_sampling",
+        fake_ipgauss_sampling,
+    )
+
+    model = object.__new__(Luhman16BPowerLawColumnModel)
+    model.jnp = jnp
+    model.parameters = SimpleNamespace(logg=4.86, rv=25.66)
+    model.art = SimpleNamespace(
+        powerlaw_temperature=lambda t0, alpha: jnp.asarray(
+            [t0, t0 * (1.0 + alpha)]
+        ),
+        run=lambda dtau, temperature: jnp.sum(
+            temperature[:, None] * jnp.exp(-jnp.cumsum(dtau, axis=0)),
+            axis=0,
+        ),
+    )
+    model._dtau_molecular_and_cia = lambda *args, **kwargs: (
+        gas_calls.append(True)
+        or jnp.asarray([[0.1, 0.2, 0.3], [0.4, 0.2, 0.1]])
+    )
+    model._cloud_dtau = lambda log_p: jnp.asarray(
+        [0.1 * log_p**2, 0.2 * log_p]
+    )
+    model.sampling_nu = jnp.asarray([1.0, 2.0, 3.0])
+    model.nu_grid = model.sampling_nu
+    model.beta_inst = jnp.asarray(1.0)
+    model.velocity_kernel = jnp.ones((3,))
+
+    def evaluate(pressures):
+        return model.cloudy_map_at_log_vmrs(
+            1200.0,
+            0.1,
+            -3.0,
+            -3.2,
+            -4.5,
+            -7.0,
+            pressures,
+            rt_batch_size=2,
+        )
+
+    pressures = jnp.linspace(-0.5, 1.5, 5)
+    spectra = evaluate(pressures)
+
+    assert spectra.shape == (5, 3)
+    assert len(gas_calls) == 1
+    np.testing.assert_allclose(np.mean(spectra, axis=1), 1.0, rtol=1.0e-6)
+
+    gradient = jax.grad(lambda values: jnp.sum(evaluate(values)[:, 0]))(
+        pressures
+    )
+    assert gradient.shape == pressures.shape
+    assert bool(jnp.all(jnp.isfinite(gradient)))
+    assert bool(jnp.any(jnp.abs(gradient) > 1.0e-7))
+
+    gas_calls.clear()
+    raw_spectra = model.cloudy_raw_map_at_log_vmrs(
+        1200.0,
+        0.1,
+        -3.0,
+        -3.2,
+        -4.5,
+        -7.0,
+        pressures,
+        rt_batch_size=2,
+    )
+    assert len(gas_calls) == 1
+    assert bool(jnp.all(jnp.isfinite(raw_spectra)))
+    assert not np.allclose(np.mean(raw_spectra, axis=1), 1.0)
+    assert np.ptp(np.mean(raw_spectra, axis=1)) > 1.0e-6
+    np.testing.assert_allclose(
+        raw_spectra / jnp.mean(raw_spectra, axis=1, keepdims=True),
+        spectra,
+        rtol=1.0e-6,
+    )
 
 
 def test_smoke_data_use_native_spacing_for_doppler_profile_padding():

@@ -1,5 +1,6 @@
 """Pixel-wise Doppler shift operators."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -112,3 +113,47 @@ def shifted_profile(
         left=jnp.nan,
         right=jnp.nan,
     )
+
+
+def shifted_pixel_profiles(
+    wavelengths,
+    rest_profiles,
+    doppler_factors,
+    *,
+    rest_wavelengths=None,
+):
+    """Doppler-shift one rest-frame profile per surface pixel.
+
+    Args:
+        wavelengths: One-dimensional observed wavelength grid.
+        rest_profiles: Rest-frame spectra with shape
+            ``(n_pixel, n_rest_wavelength)``.
+        doppler_factors: One Doppler factor per surface pixel.
+        rest_wavelengths: Common wavelength grid for ``rest_profiles``. It
+            must cover every shifted query; out-of-range queries return
+            ``NaN``. If omitted, ``wavelengths`` and the legacy
+            endpoint-clamping behavior are used.
+
+    Returns:
+        An array with shape ``(n_wavelength, n_pixel)``. Column ``j`` is
+        ``rest_profiles[j]`` evaluated at
+        ``wavelengths / doppler_factors[j]``.
+    """
+
+    wavelengths = jnp.asarray(wavelengths)
+    rest_profiles = jnp.asarray(rest_profiles)
+    doppler_factors = jnp.asarray(doppler_factors)
+
+    def shift_one(rest_profile, factor):
+        queries = wavelengths / factor
+        if rest_wavelengths is None:
+            return jnp.interp(queries, wavelengths, rest_profile)
+        return jnp.interp(
+            queries,
+            rest_wavelengths,
+            rest_profile,
+            left=jnp.nan,
+            right=jnp.nan,
+        )
+
+    return jax.vmap(shift_one)(rest_profiles, doppler_factors).T

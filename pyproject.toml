@@ -49,9 +49,11 @@ examples = [
   "pandas",
   "matplotlib",
   "tqdm",
+  "arviz",
 ]
 dev = [
   "pytest",
+  "arviz",
 ]
 
 [project.urls]

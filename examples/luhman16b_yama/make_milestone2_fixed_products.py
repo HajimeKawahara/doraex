@@ -132,13 +132,14 @@ def _plot_two_panel_map(
     invert_bottom_colorbar=False,
     top_colorbar_unit=None,
     bottom_colorbar_unit=None,
+    top_vmax=None,
 ):
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
     import matplotlib.pyplot as plt
     from matplotlib.cm import ScalarMappable
     from matplotlib.colors import Normalize
 
-    def add_vertical_colorbar(fig, ax, map_values, cmap, unit, invert=False):
+    def add_vertical_colorbar(fig, ax, map_values, cmap, unit, invert=False, vmax=None):
         values = np.asarray(map_values)
         finite_values = values[np.isfinite(values)]
         if finite_values.size == 0:
@@ -147,7 +148,7 @@ def _plot_two_panel_map(
             ScalarMappable(
                 norm=Normalize(
                     vmin=float(np.min(finite_values)),
-                    vmax=float(np.max(finite_values)),
+                    vmax=float(np.max(finite_values)) if vmax is None else vmax,
                 ),
                 cmap=cmap,
             ),
@@ -155,6 +156,7 @@ def _plot_two_panel_map(
             orientation="vertical",
             fraction=0.035,
             pad=0.02,
+            extend="max" if vmax is not None and np.max(finite_values) > vmax else "neither",
         )
         if unit:
             colorbar.set_label(unit)
@@ -195,6 +197,7 @@ def _plot_two_panel_map(
         sub=(2, 1, 1),
         cmap=top_cmap,
         title=top_title,
+        max=top_vmax,
         unit="" if use_vertical_colorbar else top_unit,
         flip="geo",
         cbar=not use_vertical_colorbar,
@@ -209,6 +212,7 @@ def _plot_two_panel_map(
             top_cmap,
             top_colorbar_unit,
             invert=invert_top_colorbar,
+            vmax=top_vmax,
         )
     hp.mollview(
         bottom_map,
@@ -304,7 +308,14 @@ def _plot_delta_s(
     )
 
 
-def _plot_figure9(wavelengths, observed, model, sigma_d, out_path):
+def _plot_figure9(
+    wavelengths,
+    observed,
+    model,
+    sigma_d,
+    out_path,
+    title="Observed spectra and fixed two-column reconstruction",
+):
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
     import matplotlib.pyplot as plt
 
@@ -339,7 +350,7 @@ def _plot_figure9(wavelengths, observed, model, sigma_d, out_path):
             linewidth=0.7,
         )
     axes[0].set_ylabel("Flux + offset")
-    axes[0].set_title("Observed spectra and fixed two-column reconstruction")
+    axes[0].set_title(title)
 
     image = axes[1].imshow(
         residual / sigma_d,
