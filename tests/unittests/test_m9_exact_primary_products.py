@@ -31,7 +31,7 @@ def _exact_archive():
         "opacity_mode": np.asarray("diffgrid"),
         "zero_mean_pressure_map": np.asarray(True),
         "nside": np.asarray(1),
-        "pressure_map_latent": np.empty((3, 11)),
+        "pressure_map_latent": np.zeros((3, 11)),
         "delta_log_p": delta,
         "log_p_cloud": center,
         "log_p_cloud_map": center[:, None] + delta,
